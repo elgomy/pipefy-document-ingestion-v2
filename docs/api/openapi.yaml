@@ -1,0 +1,684 @@
+openapi: 3.0.3
+info:
+  title: Pipefy Document Analysis Platform API
+  description: |
+    API para análisis automático de documentos con integración a Pipefy.
+    
+    Esta plataforma proporciona:
+    - Clasificación automática de documentos usando IA
+    - Integración con Pipefy para gestión de workflow
+    - Notificaciones WhatsApp via Twilio
+    - Generación de cartões CNPJ
+    - Gestión de base de datos con Supabase
+    
+    ## Autenticación
+    
+    Las APIs requieren configuración de variables de entorno con las claves correspondientes:
+    - `PIPEFY_API_TOKEN` - Token de API de Pipefy
+    - `OPENAI_API_KEY` - Clave de API de OpenAI
+    - `TWILIO_ACCOUNT_SID` y `TWILIO_AUTH_TOKEN` - Credenciales de Twilio
+    - `SUPABASE_URL` y `SUPABASE_KEY` - Configuración de Supabase
+    
+  version: 1.0.0
+  contact:
+    name: Soporte API
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Servidor de desarrollo
+  - url: https://api.pipefy-analysis.com
+    description: Servidor de producción
+
+tags:
+  - name: triagem
+    description: Operaciones de triagem y análisis completo
+  - name: classification
+    description: Clasificación de documentos
+  - name: pipefy
+    description: Integración con Pipefy
+  - name: notifications
+    description: Notificaciones WhatsApp
+  - name: cnpj
+    description: Servicios de CNPJ
+  - name: database
+    description: Operaciones de base de datos
+
+paths:
+  /api/triagem/complete:
+    post:
+      tags:
+        - triagem
+      summary: Procesar triagem completa
+      description: |
+        Procesa la triagem completa de un caso incluyendo:
+        - Clasificación de documentos
+        - Generación de informes
+        - Actualización en Pipefy
+        - Recomendaciones
+      operationId: processTriagemComplete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriagemRequest'
+            example:
+              card_id: "123456"
+              documents_data:
+                documents:
+                  - filename: "contrato_social.pdf"
+                    content: "base64_encoded_content"
+                    type: "CONTRATO_SOCIAL"
+                  - filename: "rg_socio.pdf"
+                    content: "base64_encoded_content"
+                    type: "DOCUMENTO_IDENTIDADE"
+              case_metadata:
+                razao_social: "Empresa Exemplo LTDA"
+                cnpj: "12.345.678/0001-90"
+                gestor_responsavel: "João Silva"
+      responses:
+        '200':
+          description: Triagem procesada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriagemResponse'
+        '400':
+          description: Datos de entrada inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/triagem/with-notifications:
+    post:
+      tags:
+        - triagem
+        - notifications
+      summary: Procesar triagem con notificaciones
+      description: |
+        Procesa la triagem completa incluyendo envío de notificaciones WhatsApp.
+      operationId: processTriagemWithNotifications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/TriagemRequest'
+                - type: object
+                  properties:
+                    notification_recipient:
+                      $ref: '#/components/schemas/NotificationRecipient'
+            example:
+              card_id: "123456"
+              documents_data:
+                documents:
+                  - filename: "contrato_social.pdf"
+                    content: "base64_encoded_content"
+                    type: "CONTRATO_SOCIAL"
+              case_metadata:
+                razao_social: "Empresa Exemplo LTDA"
+                cnpj: "12.345.678/0001-90"
+              notification_recipient:
+                phone_number: "+5511999999999"
+                name: "João Silva"
+                company_name: "Empresa Exemplo LTDA"
+      responses:
+        '200':
+          description: Triagem procesada con notificaciones
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TriagemResponse'
+                  - type: object
+                    properties:
+                      notification_result:
+                        $ref: '#/components/schemas/NotificationResult'
+                      notification_sent:
+                        type: boolean
+
+  /api/classification/classify:
+    post:
+      tags:
+        - classification
+      summary: Clasificar documentos
+      description: |
+        Clasifica un conjunto de documentos usando IA.
+        Retorna la clasificación, confianza y análisis detallado.
+      operationId: classifyDocuments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentsData'
+      responses:
+        '200':
+          description: Documentos clasificados exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassificationResult'
+
+  /api/pipefy/cards/{cardId}/move:
+    post:
+      tags:
+        - pipefy
+      summary: Mover card a fase
+      description: Mueve un card de Pipefy a una fase específica
+      operationId: moveCardToPhase
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "123456"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phase_id:
+                  type: string
+                  description: ID de la fase destino
+                  example: "789012"
+              required:
+                - phase_id
+      responses:
+        '200':
+          description: Card movido exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipefyMoveResponse'
+
+  /api/pipefy/cards/{cardId}/fields/{fieldId}:
+    put:
+      tags:
+        - pipefy
+      summary: Actualizar campo de card
+      description: Actualiza el valor de un campo específico en un card
+      operationId: updateCardField
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: fieldId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                  description: Nuevo valor para el campo
+              required:
+                - value
+      responses:
+        '200':
+          description: Campo actualizado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipefyUpdateResponse'
+
+  /api/pipefy/cards/{cardId}:
+    get:
+      tags:
+        - pipefy
+      summary: Obtener información de card
+      description: Obtiene información detallada de un card de Pipefy
+      operationId: getCardInfo
+      parameters:
+        - name: cardId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Información del card obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipefyCardInfo'
+
+  /api/notifications/send:
+    post:
+      tags:
+        - notifications
+      summary: Enviar notificación WhatsApp
+      description: Envía una notificación WhatsApp usando Twilio
+      operationId: sendNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRequest'
+      responses:
+        '200':
+          description: Notificación enviada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResult'
+
+  /api/cnpj/{cnpj}/validate:
+    get:
+      tags:
+        - cnpj
+      summary: Validar CNPJ
+      description: Valida un CNPJ y obtiene datos básicos
+      operationId: validateCNPJ
+      parameters:
+        - name: cnpj
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}$'
+          example: "12.345.678/0001-90"
+      responses:
+        '200':
+          description: CNPJ validado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CNPJValidationResponse'
+
+  /api/cnpj/{cnpj}/cartao:
+    post:
+      tags:
+        - cnpj
+      summary: Generar cartão CNPJ
+      description: Genera un cartão CNPJ en formato PDF
+      operationId: generateCNPJCard
+      parameters:
+        - name: cnpj
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                case_id:
+                  type: string
+                  description: ID del caso
+                save_to_database:
+                  type: boolean
+                  default: true
+                  description: Si guardar en base de datos
+      responses:
+        '200':
+          description: Cartão generado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CNPJCardResponse'
+
+components:
+  schemas:
+    TriagemRequest:
+      type: object
+      required:
+        - card_id
+        - documents_data
+      properties:
+        card_id:
+          type: string
+          description: ID del card de Pipefy
+          example: "123456"
+        documents_data:
+          $ref: '#/components/schemas/DocumentsData'
+        case_metadata:
+          type: object
+          properties:
+            razao_social:
+              type: string
+              example: "Empresa Exemplo LTDA"
+            cnpj:
+              type: string
+              example: "12.345.678/0001-90"
+            gestor_responsavel:
+              type: string
+              example: "João Silva"
+
+    DocumentsData:
+      type: object
+      required:
+        - documents
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/Document'
+
+    Document:
+      type: object
+      required:
+        - filename
+        - content
+        - type
+      properties:
+        filename:
+          type: string
+          example: "contrato_social.pdf"
+        content:
+          type: string
+          format: base64
+          description: Contenido del documento en base64
+        type:
+          type: string
+          enum:
+            - CONTRATO_SOCIAL
+            - DOCUMENTO_IDENTIDADE
+            - COMPROVANTE_ENDERECO
+            - PROCURACAO
+            - DECLARACAO_IMPOSTO_RENDA
+          example: "CONTRATO_SOCIAL"
+
+    TriagemResponse:
+      type: object
+      properties:
+        card_id:
+          type: string
+        success:
+          type: boolean
+        classification_result:
+          $ref: '#/components/schemas/ClassificationResult'
+        pipefy_operations:
+          type: array
+          items:
+            type: object
+            properties:
+              operation:
+                type: string
+              success:
+                type: boolean
+              details:
+                type: object
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        processing_time:
+          type: number
+          format: float
+        recommendations:
+          type: object
+
+    ClassificationResult:
+      type: object
+      properties:
+        classification:
+          type: string
+          enum:
+            - APROVADO
+            - PENDENCIA_BLOQUEANTE
+            - PENDENCIA_NAO_BLOQUEANTE
+            - REJEITADO
+          example: "APROVADO"
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.95
+        missing_documents:
+          type: array
+          items:
+            type: string
+        document_analyses:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentAnalysis'
+
+    DocumentAnalysis:
+      type: object
+      properties:
+        filename:
+          type: string
+        type:
+          type: string
+        quality_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        issues:
+          type: array
+          items:
+            type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+
+    NotificationRecipient:
+      type: object
+      required:
+        - phone_number
+        - name
+      properties:
+        phone_number:
+          type: string
+          pattern: '^\+\d{10,15}$'
+          example: "+5511999999999"
+        name:
+          type: string
+          example: "João Silva"
+        company_name:
+          type: string
+          example: "Empresa Exemplo LTDA"
+
+    NotificationRequest:
+      type: object
+      required:
+        - recipient
+        - message
+      properties:
+        recipient:
+          $ref: '#/components/schemas/NotificationRecipient'
+        message:
+          type: string
+          maxLength: 1600
+        notification_type:
+          type: string
+          enum:
+            - APPROVAL
+            - BLOCKING_ISSUES
+            - REJECTION
+            - CUSTOM
+
+    NotificationResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message_sid:
+          type: string
+          example: "SM1234567890"
+        status:
+          type: string
+          enum:
+            - sent
+            - delivered
+            - failed
+        error_message:
+          type: string
+          nullable: true
+
+    PipefyMoveResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        card_id:
+          type: string
+        new_phase_id:
+          type: string
+        new_phase_name:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    PipefyUpdateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        card_id:
+          type: string
+        field_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    PipefyCardInfo:
+      type: object
+      properties:
+        success:
+          type: boolean
+        card:
+          type: object
+          properties:
+            id:
+              type: string
+            title:
+              type: string
+            current_phase:
+              type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+            fields:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  value:
+                    type: string
+                  field:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      label:
+                        type: string
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    CNPJValidationResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        cnpj:
+          type: string
+        formatted_cnpj:
+          type: string
+        company_data:
+          type: object
+          properties:
+            razao_social:
+              type: string
+            nome_fantasia:
+              type: string
+            situacao:
+              type: string
+            endereco:
+              type: object
+
+    CNPJCardResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        cnpj:
+          type: string
+        case_id:
+          type: string
+        pdf_path:
+          type: string
+          nullable: true
+        database_saved:
+          type: boolean
+        cnpj_data:
+          type: object
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Mensaje de error
+        code:
+          type: string
+          description: Código de error
+        details:
+          type: object
+          description: Detalles adicionales del error
+        timestamp:
+          type: string
+          format: date-time
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Clave de API para autenticación
+
+security:
+  - ApiKeyAuth: []
+
+externalDocs:
+  description: Documentación completa de la API
+  url: https://docs.pipefy-analysis.com 

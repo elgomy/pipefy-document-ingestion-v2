@@ -1,0 +1,14 @@
+{
+  "cnpj": "14.616.875/0001-27",
+  "razao_social": "EMPRESA TESTE LTDA",
+  "nome_fantasia": "Empresa Teste",
+  "situacao_cadastral": "ATIVA",
+  "endereco_completo": "RUA DAS FLORES, 123, CENTRO, SAO PAULO - SP",
+  "uf": "SP",
+  "municipio": "SAO PAULO",
+  "telefone": "(11) 3333-4444",
+  "api_source": "CNPJá",
+  "generated_at": "2025-06-11T11:52:32.244722",
+  "consulted_at": "2025-06-11T11:52:32.244713",
+  "file_size_bytes": 77151
+}

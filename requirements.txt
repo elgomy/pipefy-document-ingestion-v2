@@ -1,0 +1,39 @@
+# =============================================================================
+# PIPEFY DOCUMENT INGESTION SERVICE v2.0 - Dependencies
+# =============================================================================
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# HTTP Client
+httpx==0.25.2
+
+# Database & Storage
+supabase==2.0.2
+
+# WhatsApp Notifications
+twilio==8.10.3
+
+# Data Validation
+pydantic==2.5.0
+
+# PDF Generation
+reportlab==4.0.7
+Pillow==10.1.0
+
+# Logging
+structlog==23.2.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+
+# Development
+black==23.11.0
+isort==5.12.0
+flake8==6.1.0
