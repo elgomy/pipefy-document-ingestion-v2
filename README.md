@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🔄 Pipefy Document Ingestion v2.0
 
 **Orquestador Principal del Agente de Triagem Documental v2.0**
@@ -239,3 +240,7 @@ python scripts/test_database_connection.py
 **Versión**: 2.0 - Agente de Triagem Documental  
 **Enfoque**: 100% Triagem Agent (extrator_agente y risco_agente en stand-by)  
 **Arquitectura**: Modelo Híbrido (IA Estratega + Backend Ejecutor)
+=======
+# pipefy-document-ingestion-v2
+🚀 Servicio de Ingestión de Documentos v2.0 - Plataforma de Análisis Documental Pipefy con IA. Maneja clasificación, validación CNPJ, notificaciones WhatsApp y integración con Pipefy GraphQL API.
+>>>>>>> 97057a24a5bb3d25f5d7bd3d3863ba0738c67edc
