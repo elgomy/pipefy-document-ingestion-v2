@@ -31,7 +31,7 @@ class Settings:
     CNPJA_API_KEY: str = os.getenv("CNPJA_API_KEY", "")
     
     # CrewAI Service Communication
-    CREWAI_SERVICE_URL: str = os.getenv("CREWAI_SERVICE_URL", "")
+    CREWAI_SERVICE_URL: str = os.getenv("CREWAI_SERVICE_URL", "https://pipefy-crewai-analysis-modular.onrender.com")
     CREWAI_SERVICE_TOKEN: str = os.getenv("CREWAI_SERVICE_TOKEN", "")
     
     # Application Configuration

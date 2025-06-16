@@ -37,7 +37,7 @@ PIPEFY_TOKEN = os.getenv("PIPEFY_TOKEN")
 PIPEFY_WEBHOOK_SECRET = os.getenv("PIPEFY_WEBHOOK_SECRET")
 
 # 🔗 COMUNICACIÓN HTTP DIRECTA - URL del servicio CrewAI
-CREWAI_SERVICE_URL = os.getenv("CREWAI_SERVICE_URL", "https://pipefy-crewai-analysis-v2.onrender.com")
+CREWAI_SERVICE_URL = os.getenv("CREWAI_SERVICE_URL", "https://pipefy-crewai-analysis-modular.onrender.com")
 
 # 🆕 NUEVAS VARIABLES PARA INTEGRACIÓN SEGÚN PRD
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")

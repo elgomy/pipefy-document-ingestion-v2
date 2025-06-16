@@ -45,3 +45,5 @@ Las pruebas unitarias para la medición de tiempo y logs se encuentran en `tests
 ---
 
 Para dudas o sugerencias, contactar al equipo de desarrollo.
+
+**URL del servicio CrewAI**: `https://pipefy-crewai-analysis-modular.onrender.com`
