@@ -19,8 +19,35 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+def measure_time_log(func):
+    """
+    Decorador para medir y loggear el tiempo de ejecución de funciones.
+    El tiempo se loggea con el logger del módulo y se añade al resultado si es un dict.
+    """
+    import functools
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = datetime.now()
+        logger.info(f"[TIME] Iniciando '{func.__name__}'")
+        try:
+            result = await func(*args, **kwargs)
+        except Exception as e:
+            raise
+        finally:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.info(f"[TIME] '{func.__name__}' finalizado en {elapsed:.2f}s")
+            # Si el resultado es un dict, añade el tiempo
+            if 'result' in locals() and isinstance(result, dict):
+                result['processing_time'] = elapsed
+        return result
+    return wrapper
+
 class TriagemService:
-    """Servicio principal de triagem que orquesta todo el flujo."""
+    """Servicio principal de triagem que orquesta todo el flujo.
+    
+    Formato de logs estándar: '%(asctime)s - %(levelname)s - %(message)s'.
+    Usa el decorador @measure_time_log para funciones críticas.
+    """
     
     def __init__(self):
         self.classification_service = classification_service
@@ -29,6 +56,7 @@ class TriagemService:
         self.notification_service = notification_service
         self.cnpj_service = cnpj_service
     
+    @measure_time_log
     async def process_triagem_complete(
         self, 
         card_id: str, 
@@ -56,7 +84,7 @@ class TriagemService:
             "processing_time": None
         }
         
-        start_time = logger.info(f"Iniciando triagem completa para card {card_id}")
+        logger.info(f"Iniciando triagem completa para card {card_id}")
         
         try:
             # 1. Clasificar documentos
@@ -118,11 +146,6 @@ class TriagemService:
             error_msg = f"Erro inesperado durante triagem do card {card_id}: {str(e)}"
             logger.error(error_msg)
             result["errors"].append(error_msg)
-        
-        finally:
-            # Calcular tempo de processamento
-            # result["processing_time"] = time.time() - start_time
-            logger.info(f"Triagem finalizada para card {card_id}. Sucesso: {result['success']}")
         
         return result
     
