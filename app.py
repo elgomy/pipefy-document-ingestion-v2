@@ -1393,13 +1393,31 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
         # 🎯 FILTRAR POR FASE 338000020 (Triagem Documentos AI)
         current_phase = card.get('current_phase')
         if not current_phase or not isinstance(current_phase, dict):
-            logger.warning(f"⚠️ Card {card_id_str} sem informação de fase atual. Ignorando webhook.")
-            return {
-                "status": "ignored",
-                "reason": "no_current_phase_info",
-                "card_id": card_id_str,
-                "message": "Webhook ignorado - sem informação de fase atual"
-            }
+            # Intentar enriquecer el payload consultando la API de Pipefy
+            logger.warning(f"⚠️ Card {card_id_str} sem informação de fase atual. Tentando enriquecer via API Pipefy...")
+            try:
+                from src.integrations.pipefy_client import pipefy_client
+                card_info = await pipefy_client.get_card_info(card_id_str)
+                if card_info and isinstance(card_info, dict) and card_info.get('current_phase'):
+                    card['current_phase'] = card_info['current_phase']
+                    current_phase = card['current_phase']
+                    logger.info(f"✅ Fase atual obtida via API: {current_phase}")
+                else:
+                    logger.warning(f"⚠️ Card {card_id_str} ainda sem informação de fase após consulta à API. Ignorando webhook.")
+                    return {
+                        "status": "ignored",
+                        "reason": "no_current_phase_info",
+                        "card_id": card_id_str,
+                        "message": "Webhook ignorado - sem informação de fase atual (mesmo após consulta à API)"
+                    }
+            except Exception as e:
+                logger.error(f"❌ Erro ao consultar API Pipefy para card {card_id_str}: {e}")
+                return {
+                    "status": "ignored",
+                    "reason": "no_current_phase_info_api_error",
+                    "card_id": card_id_str,
+                    "message": f"Webhook ignorado - erro ao consultar API Pipefy: {e}"
+                }
         
         current_phase_id = str(current_phase.get('id', ''))
         current_phase_name = current_phase.get('name', 'Unknown')
