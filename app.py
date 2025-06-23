@@ -215,7 +215,7 @@ async def enriquecer_cliente_api(request: ClienteEnriquecimentoRequest) -> Clien
 # FUNCIONES DE NEGOCIO (MOVIDAS DESDE APP.PY RAÍZ)
 # ============================================================================
 
-@with_error_handling(api_name="pipefy", max_retries=3, base_delay=2, max_delay=30)
+@with_error_handling(api_name="pipefy")
 async def validate_pipefy_webhook_signature(payload_body: bytes, signature: str, secret: str) -> bool:
     """
     Valida la firma del webhook de Pipefy usando HMAC-SHA256.
@@ -248,7 +248,7 @@ async def validate_pipefy_webhook_signature(payload_body: bytes, signature: str,
         logger.error(f"❌ Erro ao validar assinatura do webhook: {e}")
         return False
 
-@with_error_handling(api_name="pipefy", max_retries=3, base_delay=2, max_delay=30)
+@with_error_handling(api_name="pipefy")
 async def get_pipefy_field_id_for_informe_crewai(card_id: str) -> Optional[str]:
     """
     Detecta automáticamente el field_id del campo 'Informe CrewAI' en Pipefy.
