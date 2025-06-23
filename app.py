@@ -28,10 +28,17 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import json
 from datetime import datetime
+import httpx
+import tempfile
+import os
+import asyncio
 
 # Importar el sistema de error handling y métricas
 from src.utils.error_handler import with_error_handling
 from src.services.metrics_service import MetricsService
+
+# Importar funciones de negocio
+from src.services.triagem_service import gerar_e_armazenar_cartao_cnpj
 
 # Cargar variables de entorno
 load_dotenv()
@@ -210,6 +217,437 @@ async def enriquecer_cliente_api(request: ClienteEnriquecimentoRequest) -> Clien
             success=False,
             message=f"Error interno: {str(e)}"
         )
+
+# ============================================================================
+# FUNCIONES AUXILIARES PARA WEBHOOK
+# ============================================================================
+
+async def get_pipefy_card_attachments(card_id: str) -> List[PipefyAttachment]:
+    """Obtém anexos de um card do Pipefy via GraphQL."""
+    if not PIPEFY_TOKEN:
+        logger.error("ERRO: Token Pipefy não configurado.")
+        return []
+    
+    query = """
+    query GetCardAttachments($cardId: ID!) {
+        card(id: $cardId) {
+            id
+            title
+            fields {
+                name
+                value
+            }
+        }
+    }
+    """
+    
+    variables = {"cardId": card_id}
+    headers = {
+        "Authorization": f"Bearer {PIPEFY_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "query": query,
+        "variables": variables
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://api.pipefy.com/graphql", json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "errors" in data:
+                logger.error(f"ERRO GraphQL Pipefy: {data['errors']}")
+                return []
+            
+            card_data = data.get("data", {}).get("card")
+            if not card_data:
+                logger.warning(f"ALERTA: Card {card_id} não encontrado ou sem dados.")
+                return []
+            
+            attachments = []
+            fields = card_data.get("fields", [])
+            
+            for field in fields:
+                field_value = field.get("value", "")
+                if field_value and isinstance(field_value, str):
+                    try:
+                        import json
+                        urls = json.loads(field_value)
+                        if isinstance(urls, list):
+                            for url in urls:
+                                if isinstance(url, str) and url.startswith("http"):
+                                    filename = url.split("/")[-1].split("?")[0]
+                                    if not filename or filename == "":
+                                        filename = f"{field.get('name', 'documento')}.pdf"
+                                    
+                                    attachments.append(PipefyAttachment(
+                                        name=filename,
+                                        path=url
+                                    ))
+                    except (json.JSONDecodeError, TypeError):
+                        if field_value.startswith("http"):
+                            filename = field_value.split("/")[-1].split("?")[0]
+                            if not filename or filename == "":
+                                filename = f"{field.get('name', 'documento')}.pdf"
+                            
+                            attachments.append(PipefyAttachment(
+                                name=filename,
+                                path=field_value
+                            ))
+            
+            logger.info(f"INFO: {len(attachments)} anexos encontrados para card {card_id}.")
+            return attachments
+            
+    except Exception as e:
+        logger.error(f"ERRO ao buscar anexos do card {card_id}: {e}")
+        return []
+
+async def download_file_to_temp(url: str, original_filename: str) -> Optional[str]:
+    """Baixa um arquivo de uma URL para um arquivo temporário."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{original_filename}") as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+            
+            logger.info(f"INFO: Arquivo '{original_filename}' baixado para: {temp_file_path}")
+            return temp_file_path
+            
+    except Exception as e:
+        logger.error(f"ERRO ao baixar arquivo '{original_filename}' de {url}: {e}")
+        return None
+
+async def upload_to_supabase_storage_async(local_file_path: str, case_id: str, original_filename: str) -> Optional[str]:
+    """Faz upload de um arquivo local para o Supabase Storage."""
+    if not supabase_client:
+        logger.error("ERRO: Cliente Supabase não inicializado.")
+        return None
+    
+    try:
+        storage_path = f"{case_id}/{original_filename}"
+        
+        def sync_upload_and_get_url():
+            with open(local_file_path, 'rb') as file:
+                upload_response = supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET_NAME).upload(
+                    storage_path, file, file_options={"upsert": "true"}
+                )
+                
+                if hasattr(upload_response, 'error') and upload_response.error:
+                    raise Exception(f"Erro no upload: {upload_response.error}")
+                
+                public_url_response = supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET_NAME).get_public_url(storage_path)
+                return public_url_response
+        
+        public_url = await asyncio.to_thread(sync_upload_and_get_url)
+        
+        # Limpar arquivo temporário
+        try:
+            os.unlink(local_file_path)
+        except:
+            pass
+        
+        logger.info(f"INFO: Upload concluído para '{original_filename}'. URL: {public_url}")
+        return public_url
+        
+    except Exception as e:
+        logger.error(f"ERRO no upload de '{original_filename}': {e}")
+        try:
+            os.unlink(local_file_path)
+        except:
+            pass
+        return None
+
+async def determine_document_tag(filename: str, card_fields: Optional[List[Dict]] = None) -> str:
+    """Determina a tag do documento baseada no nome do arquivo."""
+    filename_lower = filename.lower()
+    
+    tag_keywords = {
+        "contrato_social": ["contrato", "social", "estatuto"],
+        "comprovante_residencia": ["comprovante", "residencia", "endereco"],
+        "documento_identidade": ["rg", "identidade", "cnh"],
+        "declaracao_impostos": ["declaracao", "imposto", "ir"],
+        "certificado_registro": ["certificado", "registro"],
+        "procuracao": ["procuracao"],
+        "balanco_patrimonial": ["balanco", "patrimonial", "demonstracao"],
+        "faturamento": ["faturamento", "receita"]
+    }
+    
+    for tag, keywords in tag_keywords.items():
+        if any(keyword in filename_lower for keyword in keywords):
+            return tag
+    
+    return "outro_documento"
+
+async def register_document_in_db(case_id: str, document_name: str, document_tag: str, file_url: str, pipe_id: Optional[str] = None):
+    """Registra um documento na tabela 'documents' do Supabase."""
+    if not supabase_client:
+        logger.error("ERRO: Cliente Supabase não inicializado.")
+        return False
+    
+    try:
+        data_to_insert = {
+            "case_id": case_id,
+            "name": document_name,
+            "document_tag": document_tag,
+            "file_url": file_url,
+            "status": "uploaded"
+        }
+        
+        if pipe_id:
+            data_to_insert["pipe_id"] = pipe_id
+            logger.info(f"INFO: Registrando documento con pipe_id: {pipe_id}")
+        
+        response = await asyncio.to_thread(
+            supabase_client.table("documents").upsert(data_to_insert, on_conflict="case_id, name").execute
+        )
+        
+        if hasattr(response, 'error') and response.error:
+            logger.error(f"ERRO Supabase DB (upsert) para {document_name}: {response.error.message}")
+            return False
+        if response.data:
+            logger.info(f"INFO: Documento '{document_name}' registrado/atualizado no DB para case_id '{case_id}'.")
+            return True
+        logger.warning(f"AVISO: Upsert do documento '{document_name}' no DB não retornou dados nem erro explícito.")
+        return False
+    except Exception as e:
+        logger.error(f"ERRO ao registrar documento '{document_name}' no Supabase DB: {e}")
+        return False
+
+async def get_checklist_url_from_supabase(config_name: str = "checklist_cadastro_pj") -> str:
+    """Obtém a URL do checklist da tabela checklist_config."""
+    if not supabase_client:
+        logger.warning("AVISO: Cliente Supabase não inicializado para buscar checklist. Usando URL padrão.")
+        return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
+    
+    try:
+        logger.info(f"INFO: Buscando URL do checklist '{config_name}' de checklist_config...")
+        
+        def sync_get_checklist_url():
+            return supabase_client.table("checklist_config").select("checklist_url").eq("config_name", config_name).single().execute()
+        
+        response = await asyncio.to_thread(sync_get_checklist_url)
+
+        if response.data and response.data.get("checklist_url"):
+            checklist_url = response.data["checklist_url"]
+            logger.info(f"INFO: URL do checklist obtida: {checklist_url}")
+            return checklist_url
+        else:
+            logger.warning(f"AVISO: URL do checklist '{config_name}' não encontrada. Usando URL padrão.")
+            return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
+            
+    except Exception as e:
+        logger.warning(f"AVISO: Erro ao buscar URL do checklist '{config_name}': {e}. Usando URL padrão.")
+        return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
+
+async def call_crewai_analysis_service(case_id: str, documents: List[Dict], checklist_url: str, pipe_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Llama directamente al servicio CrewAI para análisis de documentos.
+    MANTIENE LA MODULARIDAD: Solo llama al servicio, no guarda en Supabase.
+    El módulo CrewAI se encarga de guardar el informe en la tabla informe_cadastro.
+    """
+    try:
+        # Preparar payload para CrewAI
+        analysis_request = CrewAIAnalysisRequest(
+            case_id=case_id,
+            documents=documents,
+            checklist_url=checklist_url,
+            current_date=datetime.now().strftime('%Y-%m-%d'),
+            pipe_id=pipe_id
+        )
+        
+        logger.info(f"🔗 Llamando al servicio CrewAI para case_id: {case_id}")
+        logger.info(f"📄 Documentos a analizar: {len(documents)}")
+        logger.info(f"🎯 URL CrewAI: {CREWAI_SERVICE_URL}/analyze/sync")
+        
+        # Verificar que el servicio esté despierto
+        logger.info("🏥 Verificando estado del servicio CrewAI...")
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as health_client:
+                health_response = await health_client.get(f"{CREWAI_SERVICE_URL}/health")
+                if health_response.status_code == 200:
+                    logger.info("✅ Servicio CrewAI está activo")
+                else:
+                    logger.warning(f"⚠️ Servicio CrewAI respondió con status: {health_response.status_code}")
+        except Exception as health_error:
+            logger.warning(f"⚠️ No se pudo verificar estado del servicio: {health_error}")
+        
+        # Llamada HTTP directa al servicio CrewAI con timeout extendido para cold starts
+        logger.info("🚀 Iniciando análisis CrewAI (puede tardar si el servicio estaba dormido)...")
+        
+        # TIMEOUT AUMENTADO: 15 minutos para manejar cold starts + análisis completo
+        async with httpx.AsyncClient(timeout=900.0) as client:  
+            response = await client.post(
+                f"{CREWAI_SERVICE_URL}/analyze/sync",
+                json=analysis_request.model_dump()
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"✅ Análisis CrewAI completado exitosamente para case_id: {case_id}")
+                return {
+                    "status": "success",
+                    "crewai_response": result,
+                    "communication": "http_direct_sync"
+                }
+            else:
+                logger.error(f"❌ Error en servicio CrewAI: {response.status_code} - {response.text}")
+                return {
+                    "status": "error",
+                    "error": f"CrewAI service error: {response.status_code}",
+                    "details": response.text
+                }
+                
+    except httpx.TimeoutException:
+        logger.error(f"⏰ Timeout al llamar al servicio CrewAI para case_id: {case_id}")
+        return {
+            "status": "timeout",
+            "error": "CrewAI service timeout - posible cold start"
+        }
+    except Exception as e:
+        logger.error(f"❌ Error al llamar al servicio CrewAI: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+# ============================================================================
+# WEBHOOK PRINCIPAL DE PIPEFY
+# ============================================================================
+
+@app.post("/webhook/pipefy")
+async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTasks, x_pipefy_signature: Optional[str] = Header(None)):
+    """
+    Recebe webhooks do Pipefy, processa anexos, armazena no Supabase e chama CrewAI diretamente.
+    VERSIÓN HTTP DIRECTA: Mantiene modularidad pero usa comunicación HTTP directa.
+    """
+    try:
+        # Capturar el cuerpo raw sin Pydantic
+        raw_body = await request.body()
+        raw_body_str = raw_body.decode('utf-8', errors='ignore')
+        
+        # Parsear JSON manualmente
+        try:
+            payload_data = json.loads(raw_body_str)
+        except json.JSONDecodeError as e:
+            logger.error(f"ERRO: JSON inválido recebido: {e}")
+            raise HTTPException(status_code=400, detail="JSON inválido")
+        
+        logger.info(f"📥 Webhook Pipefy recebido. Payload length: {len(raw_body_str)}")
+        
+        # Validar estructura básica manualmente
+        if not isinstance(payload_data, dict):
+            logger.error("ERRO: Payload não é um objeto JSON válido")
+            raise HTTPException(status_code=400, detail="Payload deve ser um objeto JSON")
+        
+        data = payload_data.get('data')
+        if not data or not isinstance(data, dict):
+            logger.error("ERRO: Campo 'data' ausente ou inválido")
+            raise HTTPException(status_code=400, detail="Campo 'data' obrigatório")
+        
+        card = data.get('card')
+        if not card or not isinstance(card, dict):
+            logger.error("ERRO: Campo 'card' ausente ou inválido")
+            raise HTTPException(status_code=400, detail="Campo 'card' obrigatório")
+        
+        # Extrair e convertir card_id
+        card_id_raw = card.get('id')
+        if card_id_raw is None:
+            logger.error("ERRO: Campo 'card.id' ausente")
+            raise HTTPException(status_code=400, detail="Campo 'card.id' obrigatório")
+        
+        card_id_str = str(card_id_raw)
+        logger.info(f"📋 Processando card_id: {card_id_str}")
+        
+        # Extraer pipe_id si está disponible
+        pipe_id = None
+        if 'pipe' in card and isinstance(card['pipe'], dict):
+            pipe_id = card['pipe'].get('id')
+            if pipe_id:
+                pipe_id = str(pipe_id)
+                logger.info(f"🔗 Pipe ID encontrado: {pipe_id}")
+        
+        # Extraer action si existe
+        action = data.get('action', 'unknown')
+        logger.info(f"⚡ Ação: {action}")
+
+        # Procesar documentos anexos del card
+        attachments_from_pipefy = await get_pipefy_card_attachments(card_id_str)
+        processed_documents: List[Dict[str, Any]] = []
+
+        if not attachments_from_pipefy:
+            logger.info(f"📄 Nenhum anexo encontrado para o card {card_id_str}.")
+        else:
+            logger.info(f"📄 {len(attachments_from_pipefy)} anexos encontrados para o card {card_id_str}.")
+            for att in attachments_from_pipefy:
+                logger.info(f"⬇️ Processando anexo: {att.name}...")
+                
+                temp_file = await download_file_to_temp(att.path, att.name)
+                if temp_file:
+                    storage_url = await upload_to_supabase_storage_async(temp_file, card_id_str, att.name)
+                    if storage_url:
+                        document_tag = await determine_document_tag(att.name)
+                        success_db = await register_document_in_db(card_id_str, att.name, document_tag, storage_url, pipe_id)
+                        if success_db:
+                            processed_documents.append({
+                                "name": att.name,
+                                "file_url": storage_url,
+                                "document_tag": document_tag
+                            })
+                        else:
+                            logger.warning(f"⚠️ Falha ao fazer upload do anexo '{att.name}' para Supabase Storage.")
+                else:
+                    logger.warning(f"⚠️ Falha ao baixar o anexo '{att.name}' do Pipefy.")
+        
+        logger.info(f"✅ {len(processed_documents)} documentos processados com sucesso.")
+
+        # Obtener URL del checklist
+        logger.info("🔍 Buscando URL do checklist...")
+        checklist_url = await get_checklist_url_from_supabase()
+        logger.info(f"📋 URL do checklist: {checklist_url}")
+        
+        # 🔗 LLAMADA HTTP DIRECTA A CREWAI (en background para no bloquear respuesta)
+        background_tasks.add_task(
+            call_crewai_analysis_service,
+            card_id_str,
+            processed_documents,
+            checklist_url,
+            pipe_id
+        )
+
+        logger.info(f"🚀 Tarea CrewAI programada en background para case_id: {card_id_str}")
+        logger.info(f"📊 Resumen del procesamiento:")
+        logger.info(f"   - Card ID: {card_id_str}")
+        logger.info(f"   - Pipe ID: {pipe_id}")
+        logger.info(f"   - Documentos procesados: {len(processed_documents)}")
+        logger.info(f"   - Checklist URL: {checklist_url}")
+        logger.info(f"   - Servicio CrewAI: {CREWAI_SERVICE_URL}")
+
+        return {
+            "status": "success",
+            "message": f"Webhook para card {card_id_str} processado. {len(processed_documents)} documentos processados.",
+            "service": "document_ingestion_service",
+            "card_id": card_id_str,
+            "pipe_id": pipe_id,
+            "documents_processed": len(processed_documents),
+            "crewai_analysis": "initiated_in_background",
+            "architecture": "modular_http_direct",
+            "communication": "http_direct",
+            "cold_start_handling": "enabled"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ ERRO inesperado no webhook: {e}")
+        import traceback
+        logger.error(f"TRACEBACK: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 # ============================================================================
 # FUNCIONES DE NEGOCIO (MOVIDAS DESDE APP.PY RAÍZ)
