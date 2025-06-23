@@ -3,7 +3,10 @@ Cliente de Twilio para envío de notificaciones WhatsApp.
 Maneja el envío de mensajes de WhatsApp para notificaciones de pendencias bloqueantes.
 """
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from src.config import settings
@@ -14,6 +17,30 @@ logger = logging.getLogger(__name__)
 class TwilioAPIError(Exception):
     """Excepción personalizada para errores de la API de Twilio."""
     pass
+
+@dataclass
+class FailedMessage:
+    """Representa un mensaje fallido en la cola de reintentos."""
+    to_number: str
+    message: str
+    case_id: str
+    attempt_count: int = 0
+    last_attempt: Optional[datetime] = None
+    error_message: Optional[str] = None
+    media_url: Optional[str] = None
+    max_attempts: int = 3
+    
+    def should_retry(self) -> bool:
+        """Determina si el mensaje debe ser reintentado."""
+        if self.attempt_count >= self.max_attempts:
+            return False
+        
+        if self.last_attempt is None:
+            return True
+            
+        # Esperar al menos 5 minutos entre reintentos
+        time_since_last = datetime.now() - self.last_attempt
+        return time_since_last >= timedelta(minutes=5)
 
 class TwilioClient:
     """Cliente para interactuar con la API de Twilio WhatsApp."""
@@ -27,6 +54,9 @@ class TwilioClient:
             )
             self.whatsapp_number = settings.TWILIO_WHATSAPP_NUMBER
             
+            # Cola de mensajes fallidos para reintentos
+            self.failed_messages: List[FailedMessage] = []
+            
             # Configuración de reintentos para Twilio
             self.retry_config = RetryConfig(
                 max_retries=2,  # Menos reintentos para mensajes
@@ -35,6 +65,15 @@ class TwilioClient:
                 exponential_base=2.0,
                 jitter=True
             )
+            
+            # Métricas de monitoreo
+            self.message_metrics = {
+                "sent": 0,
+                "failed": 0,
+                "retried": 0,
+                "rate_limited": 0,
+                "authentication_errors": 0
+            }
             
             logger.info("Cliente Twilio inicializado correctamente")
         except Exception as e:
@@ -46,7 +85,8 @@ class TwilioClient:
         self,
         to_number: str,
         message: str,
-        media_url: Optional[str] = None
+        media_url: Optional[str] = None,
+        case_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Envía un mensaje de WhatsApp a un número específico.
@@ -55,22 +95,36 @@ class TwilioClient:
             to_number (str): Número de destino en formato internacional (+5511999999999)
             message (str): Contenido del mensaje
             media_url (str, optional): URL de media para adjuntar
+            case_id (str, optional): ID del caso para tracking
             
         Returns:
             Dict con el resultado del envío
         """
         try:
-            # Validar formato del número
-            if not to_number.startswith('+'):
-                to_number = f"+{to_number}"
+            # Validar número de teléfono
+            validation_result = self.validate_phone_number(to_number)
+            if not validation_result["valid"]:
+                self.message_metrics["failed"] += 1
+                return {
+                    "success": False,
+                    "message_sid": None,
+                    "status": "failed",
+                    "to_number": to_number,
+                    "from_number": self.whatsapp_number,
+                    "message_body": message,
+                    "error_code": "INVALID_PHONE",
+                    "error_message": validation_result["error"]
+                }
+            
+            formatted_number = validation_result["formatted_number"]
             
             # Formatear número para WhatsApp
-            whatsapp_to = f"whatsapp:{to_number}"
+            whatsapp_to = f"whatsapp:{formatted_number}"
             whatsapp_from = f"whatsapp:{self.whatsapp_number}"
             
             # Preparar parámetros del mensaje
             message_params = {
-                'body': message,
+                'body': message[:1600],  # Limitar mensaje a 1600 caracteres
                 'from_': whatsapp_from,
                 'to': whatsapp_to
             }
@@ -80,25 +134,46 @@ class TwilioClient:
                 message_params['media_url'] = [media_url]
             
             # Enviar mensaje
-            logger.info(f"Enviando WhatsApp a {to_number}")
+            logger.info(f"Enviando WhatsApp a {formatted_number} (caso: {case_id or 'N/A'})")
             twilio_message = self.client.messages.create(**message_params)
+            
+            # Actualizar métricas
+            self.message_metrics["sent"] += 1
             
             result = {
                 "success": True,
                 "message_sid": twilio_message.sid,
                 "status": twilio_message.status,
-                "to_number": to_number,
+                "to_number": formatted_number,
                 "from_number": self.whatsapp_number,
                 "message_body": message,
                 "error_code": None,
-                "error_message": None
+                "error_message": None,
+                "case_id": case_id
             }
             
             logger.info(f"WhatsApp enviado exitosamente. SID: {twilio_message.sid}")
             return result
             
         except TwilioException as e:
+            # Manejar errores específicos de Twilio
+            error_code = getattr(e, 'code', None)
             error_msg = f"Error de Twilio enviando WhatsApp a {to_number}: {e}"
+            
+            # Actualizar métricas específicas
+            if error_code == 20429:  # Rate limit
+                self.message_metrics["rate_limited"] += 1
+                logger.warning(f"Rate limit alcanzado para {to_number}")
+            elif error_code in [20003, 20401]:  # Authentication errors
+                self.message_metrics["authentication_errors"] += 1
+                logger.error(f"Error de autenticación Twilio: {e}")
+            else:
+                self.message_metrics["failed"] += 1
+            
+            # Agregar a cola de reintentos si es un error temporal
+            if case_id and self._is_retryable_error(error_code):
+                await self._add_to_retry_queue(to_number, message, case_id, str(e), media_url)
+            
             logger.error(error_msg)
             
             return {
@@ -108,11 +183,13 @@ class TwilioClient:
                 "to_number": to_number,
                 "from_number": self.whatsapp_number,
                 "message_body": message,
-                "error_code": getattr(e, 'code', None),
-                "error_message": str(e)
+                "error_code": error_code,
+                "error_message": str(e),
+                "case_id": case_id
             }
             
         except Exception as e:
+            self.message_metrics["failed"] += 1
             error_msg = f"Error inesperado enviando WhatsApp a {to_number}: {e}"
             logger.error(error_msg)
             
@@ -124,7 +201,8 @@ class TwilioClient:
                 "from_number": self.whatsapp_number,
                 "message_body": message,
                 "error_code": "UNKNOWN_ERROR",
-                "error_message": str(e)
+                "error_message": str(e),
+                "case_id": case_id
             }
     
     async def send_blocking_issues_notification(
@@ -155,7 +233,7 @@ class TwilioClient:
             )
             
             # Enviar mensaje
-            result = await self.send_whatsapp_message(to_number, message)
+            result = await self.send_whatsapp_message(to_number, message, case_id=case_id)
             
             # Log específico para notificaciones de pendencias
             if result["success"]:
@@ -194,7 +272,7 @@ class TwilioClient:
             message = self._generate_approval_message(company_name, case_id, cnpj)
             
             # Enviar mensaje
-            result = await self.send_whatsapp_message(to_number, message)
+            result = await self.send_whatsapp_message(to_number, message, case_id=case_id)
             
             if result["success"]:
                 logger.info(f"Notificación de aprobación enviada para caso {case_id} a {to_number}")
@@ -366,6 +444,157 @@ class TwilioClient:
                 "valid": False,
                 "error": f"Erro na validação: {e}"
             }
+    
+    def _is_retryable_error(self, error_code: Optional[int]) -> bool:
+        """
+        Determina si un error de Twilio es reintentable.
+        
+        Args:
+            error_code: Código de error de Twilio
+            
+        Returns:
+            bool: True si el error es temporal y reintentable
+        """
+        # Errores temporales que justifican reintentos
+        retryable_codes = [
+            20429,  # Rate limit exceeded
+            21614,  # Message failed due to network issues  
+            30001,  # Queue overflow
+            30002,  # Account suspended
+            30003,  # Unreachable destination handset
+            30004,  # Message blocked
+            30005,  # Unknown destination handset
+            30006,  # Landline or unreachable carrier
+            30007,  # Carrier violation
+            30008,  # Unknown error
+        ]
+        
+        return error_code in retryable_codes
+    
+    async def _add_to_retry_queue(
+        self, 
+        to_number: str, 
+        message: str, 
+        case_id: str, 
+        error_message: str,
+        media_url: Optional[str] = None
+    ):
+        """
+        Agrega un mensaje fallido a la cola de reintentos.
+        
+        Args:
+            to_number: Número de destino
+            message: Contenido del mensaje
+            case_id: ID del caso
+            error_message: Mensaje de error
+            media_url: URL de media (opcional)
+        """
+        failed_message = FailedMessage(
+            to_number=to_number,
+            message=message,
+            case_id=case_id,
+            error_message=error_message,
+            media_url=media_url,
+            last_attempt=datetime.now(),
+            attempt_count=1
+        )
+        
+        self.failed_messages.append(failed_message)
+        logger.info(f"Mensaje agregado a cola de reintentos para caso {case_id}")
+    
+    async def process_retry_queue(self) -> Dict[str, Any]:
+        """
+        Procesa la cola de mensajes fallidos para reintentos.
+        
+        Returns:
+            Dict con estadísticas del procesamiento
+        """
+        if not self.failed_messages:
+            return {
+                "processed": 0,
+                "successful_retries": 0,
+                "failed_retries": 0,
+                "removed_from_queue": 0
+            }
+        
+        processed = 0
+        successful_retries = 0
+        failed_retries = 0
+        removed_from_queue = 0
+        
+        # Crear una copia de la lista para iterar
+        messages_to_process = self.failed_messages.copy()
+        
+        for failed_message in messages_to_process:
+            if not failed_message.should_retry():
+                if failed_message.attempt_count >= failed_message.max_attempts:
+                    logger.warning(f"Mensaje para caso {failed_message.case_id} excedió máximo de reintentos")
+                    self.failed_messages.remove(failed_message)
+                    removed_from_queue += 1
+                continue
+            
+            processed += 1
+            failed_message.attempt_count += 1
+            failed_message.last_attempt = datetime.now()
+            
+            logger.info(f"Reintentando envío para caso {failed_message.case_id} (intento {failed_message.attempt_count})")
+            
+            # Intentar reenviar
+            result = await self.send_whatsapp_message(
+                to_number=failed_message.to_number,
+                message=failed_message.message,
+                media_url=failed_message.media_url,
+                case_id=failed_message.case_id
+            )
+            
+            if result["success"]:
+                successful_retries += 1
+                self.message_metrics["retried"] += 1
+                self.failed_messages.remove(failed_message)
+                logger.info(f"Reintento exitoso para caso {failed_message.case_id}")
+            else:
+                failed_retries += 1
+                failed_message.error_message = result["error_message"]
+                logger.warning(f"Reintento falló para caso {failed_message.case_id}: {result['error_message']}")
+            
+            # Pequeña pausa entre reintentos para evitar rate limiting
+            await asyncio.sleep(1)
+        
+        return {
+            "processed": processed,
+            "successful_retries": successful_retries,
+            "failed_retries": failed_retries,
+            "removed_from_queue": removed_from_queue,
+            "remaining_in_queue": len(self.failed_messages)
+        }
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """
+        Obtiene métricas del cliente de Twilio.
+        
+        Returns:
+            Dict con métricas de uso
+        """
+        return {
+            "message_metrics": self.message_metrics.copy(),
+            "failed_queue_size": len(self.failed_messages),
+            "oldest_failed_message": min(
+                (msg.last_attempt for msg in self.failed_messages), 
+                default=None
+            ),
+            "total_messages": sum(self.message_metrics.values())
+        }
+    
+    def clear_metrics(self):
+        """Reinicia las métricas del cliente."""
+        self.message_metrics = {
+            "sent": 0,
+            "failed": 0,
+            "retried": 0,
+            "rate_limited": 0,
+            "authentication_errors": 0
+        }
+        logger.info("Métricas de Twilio reiniciadas")
 
 # Instancia global del cliente
 twilio_client = TwilioClient() 

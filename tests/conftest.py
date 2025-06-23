@@ -9,6 +9,8 @@ import sys
 from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
+from src.integrations.cnpj_client import CNPJData
+from src.services.cnpj_service import CNPJService
 
 # Agregar el directorio src al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -40,27 +42,69 @@ def mock_env_vars():
         yield env_vars
 
 @pytest.fixture
-def sample_cnpj_data():
-    """Datos de ejemplo para pruebas de CNPJ."""
-    return {
+def mock_supabase_client():
+    """Mock del cliente Supabase."""
+    mock_client = Mock()
+    mock_client.storage = Mock()
+    mock_client.storage.from_ = Mock()
+    mock_client.storage.from_.return_value.upload = AsyncMock(return_value={"path": "cards/test.pdf"})
+    mock_client.storage.from_.return_value.list = AsyncMock(return_value=[{"name": "test.pdf"}])
+    mock_client.storage.from_.return_value.get_public_url = Mock(return_value="https://test.com/cards/test.pdf")
+    return mock_client
+
+@pytest.fixture
+def mock_cnpj_client():
+    """Mock del cliente CNPJ."""
+    mock_client = Mock()
+    mock_client.get_cnpj_data = AsyncMock(return_value=CNPJData(
+        cnpj="11.222.333/0001-81",
+        razao_social="EMPRESA TESTE LTDA",
+        nome_fantasia="Empresa Teste",
+        situacao_cadastral="ATIVA",
+        uf="SP",
+        municipio="SAO PAULO",
+        endereco_completo="RUA DAS FLORES, 123",
+        telefone="(11) 1234-5678",
+        api_source="test",
+        consulted_at=datetime.now()
+    ))
+    mock_client.generate_cnpj_card = AsyncMock(return_value={
         "cnpj": "11.222.333/0001-81",
         "razao_social": "EMPRESA TESTE LTDA",
-        "nome_fantasia": "Empresa Teste",
         "situacao_cadastral": "ATIVA",
-        "endereco": {
-            "logradouro": "RUA TESTE",
-            "numero": "123",
-            "bairro": "CENTRO",
-            "municipio": "SAO PAULO",
-            "uf": "SP",
-            "cep": "01234-567"
-        },
-        "telefone": "(11) 1234-5678",
-        "email": "contato@empresateste.com.br",
-        "atividade_principal": "ATIVIDADE TESTE",
-        "data_abertura": "2020-01-01",
-        "consulted_at": datetime.now()
-    }
+        "generated_at": datetime.now().isoformat()
+    })
+    return mock_client
+
+@pytest.fixture
+def cnpj_service(mock_supabase_client, mock_cnpj_client, tmp_path):
+    """Crea una instancia del servicio CNPJ para pruebas."""
+    service = CNPJService(mock_supabase_client)
+    service.cnpj_client = mock_cnpj_client
+    service.cache_dir = tmp_path / "cache"
+    service.cards_dir = tmp_path / "cards"
+    return service
+
+@pytest.fixture
+def valid_cnpj():
+    """CNPJ válido para pruebas."""
+    return "11.222.333/0001-81"
+
+@pytest.fixture
+def sample_cnpj_data():
+    """Datos de muestra de CNPJ."""
+    return CNPJData(
+        cnpj="11.222.333/0001-81",
+        razao_social="EMPRESA TESTE LTDA",
+        nome_fantasia="Empresa Teste",
+        situacao_cadastral="ATIVA",
+        uf="SP",
+        municipio="SAO PAULO",
+        endereco_completo="RUA DAS FLORES, 123, CENTRO, SAO PAULO - SP",
+        telefone="(11) 3333-4444",
+        api_source="Mock",
+        consulted_at=datetime.now()
+    )
 
 @pytest.fixture
 def sample_pipefy_card():
@@ -159,18 +203,6 @@ def mock_twilio_client():
         "success": True,
         "message_sid": "test_sid"
     })
-    return mock_client
-
-@pytest.fixture
-def mock_cnpj_client():
-    """Mock do cliente CNPJ."""
-    mock_client = Mock()
-    mock_client.get_cnpj_data = AsyncMock()
-    mock_client.generate_cnpj_card = AsyncMock()
-    mock_client.download_cnpj_certificate_pdf = AsyncMock()
-    mock_client._validate_cnpj = Mock(return_value=True)
-    mock_client._clean_cnpj = Mock(return_value="11222333000181")
-    mock_client._format_cnpj = Mock(return_value="11.222.333/0001-81")
     return mock_client
 
 @pytest.fixture

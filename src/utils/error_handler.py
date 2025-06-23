@@ -6,6 +6,7 @@ Proporciona logging estructurado, retry logic, y notificaciones de errores crít
 import asyncio
 import logging
 import traceback
+import time
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -22,6 +23,54 @@ except ImportError:
 
 # Configurar logger específico para errores de API
 logger = logging.getLogger(__name__)
+
+# Import para métricas - con fallback para evitar dependencias circulares
+_metrics_service = None
+ServiceType = None
+
+def _initialize_metrics_service():
+    """Inicializa el servicio de métricas de forma lazy."""
+    global _metrics_service, ServiceType
+    if _metrics_service is None:
+        try:
+            # Intentar importación relativa primero
+            try:
+                from ..services.metrics_service import MetricsService, ServiceType as ST
+            except ImportError:
+                # Fallback a importación absoluta
+                from services.metrics_service import MetricsService, ServiceType as ST
+            
+            ServiceType = ST
+            _metrics_service = MetricsService()
+            logger.debug("MetricsService inicializado correctamente")
+        except ImportError as e:
+            logger.debug(f"MetricsService no disponible: {e}")
+            pass
+        except Exception as e:
+            logger.debug(f"Error al inicializar MetricsService: {e}")
+            pass
+    return _metrics_service
+
+
+def _get_service_type_from_api_name(api_name: str) -> Optional['ServiceType']:
+    """Mapea nombres de API a ServiceType para métricas."""
+    if not ServiceType:
+        return None
+        
+    api_name_lower = api_name.lower()
+    
+    if 'pipefy' in api_name_lower:
+        return ServiceType.PIPEFY
+    elif 'crewai' in api_name_lower or 'crew' in api_name_lower:
+        return ServiceType.CREWAI
+    elif 'twilio' in api_name_lower or 'whatsapp' in api_name_lower:
+        return ServiceType.TWILIO
+    elif 'cnpj' in api_name_lower or 'brasil' in api_name_lower:
+        return ServiceType.CNPJ
+    elif 'supabase' in api_name_lower or 'database' in api_name_lower:
+        return ServiceType.SUPABASE
+    
+    return None
 
 
 class APIErrorSeverity(Enum):
@@ -377,14 +426,55 @@ def with_error_handling(
         async def async_wrapper(*args, **kwargs):
             error_handler = get_error_handler()
             config = retry_config or error_handler.default_retry_config
+            start_time = time.time()
+            service_type = _get_service_type_from_api_name(api_name)
             
             for attempt in range(config.max_retries + 1):
                 try:
                     result = await func(*args, **kwargs)
-                    error_handler.log_success(api_name, context)
+                    
+                    # Calcular tiempo de respuesta
+                    response_time = time.time() - start_time
+                    
+                    # Registrar métricas de éxito
+                    metrics_service = _initialize_metrics_service()
+                    if metrics_service and service_type:
+                        metrics_service.record_request(
+                            service_type=service_type,
+                            success=True,
+                            response_time=response_time,
+                            is_timeout=False
+                        )
+                    
+                    # Log éxito
+                    error_handler.log_success(
+                        api_name, 
+                        {**(context or {}), 'response_time': response_time, 'attempt': attempt + 1}
+                    )
                     return result
                     
                 except Exception as e:
+                    # Calcular tiempo de respuesta
+                    response_time = time.time() - start_time
+                    
+                    # Determinar si es timeout
+                    is_timeout = isinstance(e, (
+                        aiohttp.ClientTimeout, 
+                        httpx.TimeoutException, 
+                        asyncio.TimeoutError
+                    ))
+                    
+                    # Registrar métricas de fallo
+                    metrics_service = _initialize_metrics_service()
+                    if metrics_service and service_type:
+                        metrics_service.record_request(
+                            service_type=service_type,
+                            success=False,
+                            response_time=response_time,
+                            is_timeout=is_timeout,
+                            error_message=str(e)
+                        )
+                    
                     # Extraer información de la respuesta si está disponible
                     status_code = getattr(e, 'status_code', None) or getattr(e, 'response', {}).get('status_code')
                     response_body = None
@@ -400,7 +490,10 @@ def with_error_handling(
                     error.max_retries = config.max_retries
                     
                     # Log del error
-                    error_handler.log_error(error, context)
+                    error_handler.log_error(
+                        error, 
+                        {**(context or {}), 'response_time': response_time, 'attempt': attempt + 1}
+                    )
                     
                     # Verificar si debe reintentar
                     if attempt < config.max_retries and error_handler.should_retry(error):
@@ -416,18 +509,61 @@ def with_error_handling(
         def sync_wrapper(*args, **kwargs):
             # Para funciones síncronas, usar una versión simplificada
             error_handler = get_error_handler()
+            start_time = time.time()
+            service_type = _get_service_type_from_api_name(api_name)
             
             try:
                 result = func(*args, **kwargs)
-                error_handler.log_success(api_name, context)
+                
+                # Calcular tiempo de respuesta
+                response_time = time.time() - start_time
+                
+                # Registrar métricas de éxito
+                metrics_service = _initialize_metrics_service()
+                if metrics_service and service_type:
+                    metrics_service.record_request(
+                        service_type=service_type,
+                        success=True,
+                        response_time=response_time,
+                        is_timeout=False
+                    )
+                
+                error_handler.log_success(
+                    api_name, 
+                    {**(context or {}), 'response_time': response_time}
+                )
                 return result
                 
             except Exception as e:
+                # Calcular tiempo de respuesta
+                response_time = time.time() - start_time
+                
+                # Determinar si es timeout
+                is_timeout = isinstance(e, (
+                    aiohttp.ClientTimeout, 
+                    httpx.TimeoutException, 
+                    asyncio.TimeoutError
+                ))
+                
+                # Registrar métricas de fallo
+                metrics_service = _initialize_metrics_service()
+                if metrics_service and service_type:
+                    metrics_service.record_request(
+                        service_type=service_type,
+                        success=False,
+                        response_time=response_time,
+                        is_timeout=is_timeout,
+                        error_message=str(e)
+                    )
+                
                 status_code = getattr(e, 'status_code', None)
                 response_body = getattr(e, 'response', None)
                 
                 error = error_handler.classify_error(e, api_name, status_code, response_body)
-                error_handler.log_error(error, context)
+                error_handler.log_error(
+                    error, 
+                    {**(context or {}), 'response_time': response_time}
+                )
                 raise
         
         # Detectar si la función es async
@@ -454,4 +590,9 @@ def get_error_handler() -> APIErrorHandler:
 def reset_error_handler() -> None:
     """Resetea el manejador de errores (útil para tests)."""
     global _error_handler
-    _error_handler = None 
+    _error_handler = None
+
+
+def get_metrics_service():
+    """Obtiene la instancia del servicio de métricas."""
+    return _initialize_metrics_service() 

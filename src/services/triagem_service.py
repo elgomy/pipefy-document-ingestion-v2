@@ -13,8 +13,9 @@ from src.services.notification_service import (
     NotificationContext,
     NotificationType
 )
-from src.services.cnpj_service import cnpj_service, CNPJServiceError
+from src.services.cnpj_service import CNPJService, CNPJServiceError
 from src.integrations.pipefy_client import PipefyAPIError
+from src.integrations.supabase_client import get_supabase_client
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class TriagemService:
         self.pipefy_service = pipefy_service
         self.report_service = report_service
         self.notification_service = notification_service
-        self.cnpj_service = cnpj_service
+        self.cnpj_service = CNPJService(get_supabase_client())
     
     @measure_time_log
     async def process_triagem_complete(
