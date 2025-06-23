@@ -37,8 +37,8 @@ import asyncio
 from src.utils.error_handler import with_error_handling
 from src.services.metrics_service import MetricsService
 
-# Importar funciones de negocio
-from src.services.triagem_service import gerar_e_armazenar_cartao_cnpj
+# Importar servicios de negocio
+from src.services.triagem_service import TriagemService
 
 # Cargar variables de entorno
 load_dotenv()
@@ -75,11 +75,12 @@ PIPEFY_API_URL = "https://api.pipefy.com/graphql"
 # Cliente Supabase global
 supabase_client: Optional[Client] = None
 metrics_service: Optional[MetricsService] = None
+triagem_service: Optional[TriagemService] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gerencia o ciclo de vida da aplicação FastAPI."""
-    global supabase_client, metrics_service
+    global supabase_client, metrics_service, triagem_service
     
     # Startup
     logger.info("🚀 Iniciando Pipefy Document Ingestion Service v2.0...")
@@ -100,6 +101,10 @@ async def lifespan(app: FastAPI):
         # Inicializar servicio de métricas
         metrics_service = MetricsService()
         logger.info("✅ Servicio de métricas inicializado.")
+        
+        # Inicializar servicio de triagem
+        triagem_service = TriagemService()
+        logger.info("✅ Servicio de triagem inicializado.")
         
     except Exception as e:
         logger.error(f"ERRO ao inicializar servicios: {e}")
@@ -197,18 +202,26 @@ async def enriquecer_cliente_api(request: ClienteEnriquecimentoRequest) -> Clien
     try:
         logger.info(f"🔍 Iniciando enriquecimiento de cliente para CNPJ: {request.cnpj}")
         
-        # Llamar a la función de enriquecimiento completo
-        success = await gerar_e_armazenar_cartao_cnpj(request.case_id, request.cnpj)
+        if not triagem_service:
+            raise HTTPException(status_code=500, detail="Servicio de triagem no inicializado")
         
-        if success:
+        # Llamar al método de la instancia del servicio
+        result = await triagem_service.gerar_e_armazenar_cartao_cnpj(
+            cnpj=request.cnpj,
+            case_id=request.case_id,
+            save_to_database=True
+        )
+        
+        if result.get("success"):
             return ClienteEnriquecimentoResponse(
                 success=True,
+                data=result,
                 message=f"Cliente enriquecido exitosamente para CNPJ: {request.cnpj}"
             )
         else:
             return ClienteEnriquecimentoResponse(
                 success=False,
-                message=f"Error al enriquecer cliente para CNPJ: {request.cnpj}"
+                message=f"Error al enriquecer cliente para CNPJ: {request.cnpj} - {result.get('error', 'Error desconocido')}"
             )
             
     except Exception as e:
