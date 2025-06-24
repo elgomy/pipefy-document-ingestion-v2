@@ -142,11 +142,11 @@ class TestPipefyClient:
             
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
             
-            result = await pipefy_client.update_card_field("123456", "informe_triagem_crewai", "Test report")
+            result = await pipefy_client.update_card_field("123456", "informe_crewai_2", "Test report")
             
             assert result["success"] is True
             assert result["card_id"] == "123456"
-            assert result["field_id"] == "informe_triagem_crewai"
+            assert result["field_id"] == "informe_crewai_2"
     
     @pytest.mark.asyncio
     async def test_get_card_info_success(self, pipefy_client, mock_card_info_response):

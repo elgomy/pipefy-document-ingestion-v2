@@ -53,7 +53,7 @@ class TestPipefyService:
             assert result["classification"] == "Aprovado"
             assert len(result["operations"]) == 2
             assert result["operations"][0]["type"] == "move_card"
-            assert result["operations"][1]["type"] == "update_field"
+            assert result["operations"][1]["type"] == "update_detailed_report"
             assert len(result["errors"]) == 0
             
             mock_move.assert_called_once_with("123456", "Aprovado")

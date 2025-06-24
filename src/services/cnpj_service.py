@@ -309,3 +309,236 @@ class CNPJService:
             
         except Exception as e:
             raise CNPJServiceError(f"Error al listar cartones CNPJ: {str(e)}")
+    
+    @with_error_handling("cnpj_service", context={"operation": "gerar_e_armazenar_cartao_cnpj"})
+    async def gerar_e_armazenar_cartao_cnpj(
+        self,
+        cnpj: str,
+        case_id: str,
+        save_to_database: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Gera e armazena cartão CNPJ no bucket 'documents' de Supabase Storage para um caso específico.
+        Esta função é compatível com o formato esperado pelo triagem_service.
+        
+        Args:
+            cnpj: CNPJ para gerar o cartão
+            case_id: ID do caso associado
+            save_to_database: Se deve salvar na base de dados (default: True)
+            
+        Returns:
+            Resultado da geração do cartão com informações detalhadas
+            
+        Raises:
+            CNPJServiceError: Se há erro ao gerar o cartão
+        """
+        try:
+            logger.info(f"Gerando cartão CNPJ {cnpj} para caso {case_id}")
+            
+            # Limpar CNPJ
+            cnpj_clean = cnpj.replace('.', '').replace('/', '').replace('-', '')
+            
+            # Verificar se CNPJ é válido
+            if len(cnpj_clean) != 14 or not cnpj_clean.isdigit():
+                raise CNPJServiceError(f"CNPJ inválido: {cnpj}")
+            
+            # Definir paths
+            card_file = self.cards_dir / f"cartao_cnpj_{cnpj_clean}_{case_id}.pdf"
+            storage_path = f"{case_id}/cartao_cnpj_gerado.pdf"
+            
+            try:
+                # Obtener dados do CNPJ
+                cnpj_data = await self.get_cnpj_data(cnpj)
+                
+                # Descargar PDF do cartão CNPJ
+                pdf_info = await self.cnpj_client.download_cnpj_certificate_pdf(cnpj)
+                
+                # Guardar o conteúdo do PDF em arquivo temporário
+                with open(card_file, 'wb') as f:
+                    f.write(pdf_info["content"])
+                
+                # Subir para Supabase Storage no bucket 'documents'
+                with open(card_file, 'rb') as f:
+                    upload_result = await asyncio.to_thread(
+                        self.client.storage.from_("documents").upload,
+                        storage_path,
+                        f,
+                        {"content-type": "application/pdf"}
+                    )
+                
+                # Obter URL pública
+                public_url = await asyncio.to_thread(
+                    self.client.storage.from_("documents").get_public_url,
+                    storage_path
+                )
+                
+                # Registrar na base de dados se solicitado
+                supabase_document_id = None
+                if save_to_database:
+                    document_data = {
+                        "case_id": case_id,
+                        "document_name": "cartao_cnpj_gerado.pdf",
+                        "document_tag": "cartao_cnpj",
+                        "file_url": public_url,
+                        "file_size_bytes": pdf_info.get("file_size_bytes", len(pdf_info["content"])),
+                        "uploaded_at": datetime.now().isoformat()
+                    }
+                    
+                    db_result = await self.client.table("documents").insert(document_data).execute()
+                    if db_result.data:
+                        supabase_document_id = db_result.data[0].get("id")
+                
+                # Preparar resposta no formato esperado
+                result = {
+                    "success": True,
+                    "cnpj": cnpj,
+                    "razao_social": cnpj_data.razao_social,
+                    "file_path": storage_path,
+                    "pdf_file_path": str(card_file),
+                    "local_file_path": str(card_file),
+                    "supabase_public_url": public_url,
+                    "supabase_document_id": supabase_document_id,
+                    "generated_at": datetime.now().isoformat(),
+                    "api_source": cnpj_data.api_source,
+                    "saved_to_database": save_to_database and supabase_document_id is not None,
+                    "file_size_bytes": pdf_info.get("file_size_bytes", len(pdf_info["content"]))
+                }
+                
+                logger.info(f"Cartão CNPJ gerado com sucesso para caso {case_id}: {storage_path}")
+                return result
+                
+            except Exception as e:
+                logger.error(f"Erro ao gerar cartão CNPJ para caso {case_id}: {str(e)}")
+                raise CNPJServiceError(f"Erro ao gerar cartão CNPJ: {str(e)}")
+            finally:
+                # Limpar arquivo temporário
+                if card_file.exists():
+                    try:
+                        card_file.unlink()
+                    except Exception as e:
+                        logger.warning(f"Erro ao remover arquivo temporário {card_file}: {e}")
+                        
+        except CNPJServiceError:
+            # Re-raise CNPJServiceError as is
+            raise
+        except Exception as e:
+            logger.error(f"Erro inesperado ao gerar cartão CNPJ para caso {case_id}: {str(e)}")
+            raise CNPJServiceError(f"Erro inesperado: {str(e)}")
+    
+    def list_cached_cnpjs(self) -> List[Dict[str, Any]]:
+        """
+        Lista CNPJs em cache. Função de conveniência para estatísticas.
+        
+        Returns:
+            Lista de dados de CNPJ em cache
+        """
+        try:
+            # Listar arquivos de cache locais
+            cache_files = list(self.cache_dir.glob("*.json"))
+            cached_data = []
+            
+            for cache_file in cache_files:
+                try:
+                    with open(cache_file, 'r') as f:
+                        data = json.load(f)
+                        # Verificar se ainda é válido
+                        cached_at = datetime.fromisoformat(data.get("cached_at", "1970-01-01"))
+                        is_valid = datetime.now() - cached_at < self.cache_duration
+                        data["is_valid"] = is_valid
+                        cached_data.append(data)
+                except Exception as e:
+                    logger.warning(f"Erro ao ler arquivo de cache {cache_file}: {e}")
+            
+            # Ordenar por data de cache (mais recente primeiro)
+            cached_data.sort(key=lambda x: x.get("cached_at", ""), reverse=True)
+            return cached_data
+            
+        except Exception as e:
+            logger.error(f"Erro ao listar CNPJs em cache: {e}")
+            return []
+    
+    def list_generated_cards(self) -> List[Dict[str, Any]]:
+        """
+        Lista cartões gerados localmente. Função de conveniência para estatísticas.
+        
+        Returns:
+            Lista de cartões gerados
+        """
+        try:
+            # Esta função retorna uma lista simplificada
+            # Os dados reais estão no Supabase Storage
+            card_files = list(self.cards_dir.glob("cartao_cnpj_*.pdf"))
+            cards_info = []
+            
+            for card_file in card_files[:10]:  # Limitar a 10 mais recentes
+                try:
+                    stat = card_file.stat()
+                    cards_info.append({
+                        "filename": card_file.name,
+                        "generated_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "file_size_bytes": stat.st_size
+                    })
+                except Exception as e:
+                    logger.warning(f"Erro ao obter info do arquivo {card_file}: {e}")
+            
+            # Ordenar por data de modificação (mais recente primeiro)
+            cards_info.sort(key=lambda x: x.get("generated_at", ""), reverse=True)
+            return cards_info
+            
+        except Exception as e:
+            logger.error(f"Erro ao listar cartões gerados: {e}")
+            return []
+    
+    async def validate_cnpj_for_triagem(self, cnpj: str) -> Dict[str, Any]:
+        """
+        Valida CNPJ para processo de triagem.
+        
+        Args:
+            cnpj: CNPJ para validar
+            
+        Returns:
+            Resultado da validação
+        """
+        try:
+            # Limpar CNPJ
+            cnpj_clean = cnpj.replace('.', '').replace('/', '').replace('-', '')
+            
+            # Validação básica de formato
+            if len(cnpj_clean) != 14 or not cnpj_clean.isdigit():
+                return {
+                    "valid": False,
+                    "error": f"Formato de CNPJ inválido: {cnpj}",
+                    "cnpj": cnpj
+                }
+            
+            # Tentar obter dados do CNPJ
+            try:
+                cnpj_data = await self.get_cnpj_data(cnpj)
+                
+                # Verificar situação cadastral
+                situacao_ativa = cnpj_data.situacao_cadastral and cnpj_data.situacao_cadastral.upper() == "ATIVA"
+                
+                return {
+                    "valid": True,
+                    "cnpj": cnpj,
+                    "razao_social": cnpj_data.razao_social,
+                    "situacao_cadastral": cnpj_data.situacao_cadastral,
+                    "situacao_ativa": situacao_ativa,
+                    "api_source": cnpj_data.api_source,
+                    "warning": None if situacao_ativa else "CNPJ com situação cadastral não ativa"
+                }
+                
+            except CNPJAPIError as e:
+                return {
+                    "valid": False,
+                    "error": f"Erro na API CNPJ: {str(e)}",
+                    "cnpj": cnpj
+                }
+                
+        except Exception as e:
+            logger.error(f"Erro inesperado na validação de CNPJ {cnpj}: {str(e)}")
+            return {
+                "valid": False,
+                "error": f"Erro inesperado: {str(e)}",
+                "cnpj": cnpj
+            }

@@ -16,7 +16,7 @@ class Settings:
     PHASE_ID_APROVADO: str = os.getenv("PHASE_ID_APROVADO", "338000018")
     PHASE_ID_PENDENCIAS: str = os.getenv("PHASE_ID_PENDENCIAS", "338000017")
     PHASE_ID_EMITIR_DOCS: str = os.getenv("PHASE_ID_EMITIR_DOCS", "338000019")
-    FIELD_ID_INFORME: str = os.getenv("FIELD_ID_INFORME", "informe_triagem_crewai")
+    FIELD_ID_INFORME: str = os.getenv("FIELD_ID_INFORME", "informe_crewai_2")
     
     # Supabase Configuration
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
