@@ -156,13 +156,22 @@ class TwilioClient:
             )
             
             # Enviar mensaje
-            result = await self.send_whatsapp_message(to_number, message, case_id=case_id)
+            success = await self.send_whatsapp_message(to_number, message)
+            
+            result = {
+                "success": success,
+                "case_id": case_id,
+                "to_number": to_number,
+                "message_sent": message[:100] + "..." if len(message) > 100 else message
+            }
             
             # Log específico para notificaciones de pendencias
-            if result["success"]:
+            if success:
                 logger.info(f"Notificación de pendencias enviada para caso {case_id} a {to_number}")
+                result["message_sid"] = "TWILIO_SID_PLACEHOLDER"  # En producción esto vendrá de Twilio
             else:
-                logger.error(f"Falló notificación de pendencias para caso {case_id}: {result['error_message']}")
+                logger.error(f"Falló notificación de pendencias para caso {case_id}")
+                result["error_message"] = "Error enviando mensaje WhatsApp"
             
             return result
             
@@ -195,10 +204,20 @@ class TwilioClient:
             message = self._generate_approval_message(company_name, case_id, cnpj)
             
             # Enviar mensaje
-            result = await self.send_whatsapp_message(to_number, message, case_id=case_id)
+            success = await self.send_whatsapp_message(to_number, message)
             
-            if result["success"]:
+            result = {
+                "success": success,
+                "case_id": case_id,
+                "to_number": to_number,
+                "message_sent": message[:100] + "..." if len(message) > 100 else message
+            }
+            
+            if success:
                 logger.info(f"Notificación de aprobación enviada para caso {case_id} a {to_number}")
+                result["message_sid"] = "TWILIO_SID_PLACEHOLDER"  # En producción esto vendrá de Twilio
+            else:
+                result["error_message"] = "Error enviando mensaje WhatsApp"
             
             return result
             

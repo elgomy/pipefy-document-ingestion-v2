@@ -54,7 +54,6 @@ class PipefyClient:
               }
               updated_at
             }
-            success
           }
         }
         """
@@ -81,12 +80,13 @@ class PipefyClient:
                     raise PipefyAPIError(error_msg)
                 
                 move_result = result.get("data", {}).get("moveCardToPhase", {})
-                if not move_result.get("success"):
-                    error_msg = f"Falló el movimiento del card {card_id} a fase {phase_id}"
+                card_info = move_result.get("card", {})
+                
+                if not card_info:
+                    error_msg = f"Falló el movimiento del card {card_id} a fase {phase_id} - no se obtuvo información del card"
                     logger.error(error_msg)
                     raise PipefyAPIError(error_msg)
                 
-                card_info = move_result.get("card", {})
                 phase_name = card_info.get("current_phase", {}).get("name", "Desconocida")
                 
                 logger.info(f"Card {card_id} movido exitosamente a fase '{phase_name}' (ID: {phase_id})")
@@ -129,8 +129,8 @@ class PipefyClient:
             PipefyAPIError: Si hay error en la API de Pipefy
         """
         mutation = """
-        mutation UpdateCardField($cardId: ID!, $fieldId: ID!, $newValue: JSON!) {
-          updateCardField(input: {card_id: $cardId, field_id: $fieldId, value: $newValue}) {
+        mutation UpdateCardField($cardId: ID!, $fieldId: ID!, $newValue: String!) {
+          updateCardField(input: {card_id: $cardId, field_id: $fieldId, new_value: $newValue}) {
             card {
               id
               title
