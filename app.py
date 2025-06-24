@@ -986,13 +986,24 @@ async def move_pipefy_card_to_phase(card_id: str, phase_id: str) -> bool:
     }
     
     try:
+        logger.info(f"🔄 Iniciando movimiento de card {card_id} hacia phase {phase_id}")
+        logger.info(f"🔍 Payload GraphQL: {json.dumps(payload, indent=2)}")
+        
         async with httpx.AsyncClient() as client:
             response = await client.post(PIPEFY_API_URL, json=payload, headers=headers)
+            logger.info(f"📊 HTTP Status: {response.status_code}")
+            logger.info(f"📋 Response Headers: {dict(response.headers)}")
+            
             response.raise_for_status()
             data = response.json()
+            logger.info(f"📄 Response Data: {json.dumps(data, indent=2)}")
             
             if "errors" in data:
                 logger.error(f"❌ Erro GraphQL ao mover card {card_id}: {data['errors']}")
+                for error in data['errors']:
+                    error_msg = error.get('message', 'Unknown error')
+                    error_code = error.get('extensions', {}).get('code', 'Unknown code')
+                    logger.error(f"   - {error_code}: {error_msg}")
                 return False
             
             move_result = data.get("data", {}).get("moveCardToPhase")
@@ -1001,11 +1012,12 @@ async def move_pipefy_card_to_phase(card_id: str, phase_id: str) -> bool:
                 logger.info(f"✅ Card {card_id} movido para fase: {new_phase['name']} (ID: {new_phase['id']})")
                 return True
             else:
-                logger.error(f"❌ Resposta inesperada ao mover card {card_id}")
+                logger.error(f"❌ Resposta inesperada ao mover card {card_id}: {data}")
                 return False
                 
     except Exception as e:
         logger.error(f"❌ Erro ao mover card {card_id} para fase {phase_id}: {e}")
+        logger.error(f"📍 Erro completo: {type(e).__name__}: {str(e)}")
         return False
 
 async def get_manager_phone_for_card(card_id: str) -> Optional[str]:
@@ -1242,24 +1254,47 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
         
         # Extrair ações requeridas das pendências para compatibilidade
         acoes_requeridas = []
+        
+        # SEMPRE tentar detectar se há necessidade de Cartão CNPJ automaticamente
+        import re
+        # Padrões para detectar necessidade de Cartão CNPJ
+        cnpj_patterns = [
+            r'cartão\s+cnpj', r'carta\s+cnpj', r'documento\s+cnpj', 
+            r'comprovante\s+cnpj', r'consulta\s+cnpj', r'certidão\s+cnpj',
+            r'documento.*receita.*federal', r'rfb', r'cnpja'
+        ]
+        
+        # Buscar CNPJ válido no texto completo
+        cnpj_number_pattern = r'\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}|\d{14}'
+        texto_completo = f"{resumo_analise} {relatorio_detalhado}"
         for pendencia in pendencias:
-            acao_requerida = pendencia.get("acao_requerida", "")
-            if "cartão cnpj" in acao_requerida.lower() or "cnpj" in acao_requerida.lower():
-                # Tentar extrair CNPJ do resumo ou buscar en documentos analisados
-                cnpj_extraido = None
-                # Lógica básica para extrair CNPJ (pode ser melhorada)
-                import re
-                cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
-                texto_completo = f"{resumo_analise} {relatorio_detalhado}"
-                cnpj_matches = re.findall(cnpj_pattern, texto_completo)
-                if cnpj_matches:
-                    cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '')
-                
+            texto_completo += f" {pendencia.get('descricao', '')} {pendencia.get('acao_requerida', '')}"
+        
+        cnpj_extraido = None
+        cnpj_matches = re.findall(cnpj_number_pattern, texto_completo, re.IGNORECASE)
+        if cnpj_matches:
+            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '').replace(' ', '')
+            logger.info(f"🎯 CNPJ encontrado automaticamente: {cnpj_extraido}")
+        
+        # Verificar se há necessidade de Cartão CNPJ
+        need_cnpj_card = False
+        for pattern in cnpj_patterns:
+            if re.search(pattern, texto_completo, re.IGNORECASE):
+                need_cnpj_card = True
+                logger.info(f"🔍 Detectada necessidade de Cartão CNPJ pelo padrão: {pattern}")
+                break
+        
+        # Se há necessidade ou se o caso é "Pendencia_Bloqueante", tentar gerar
+        if need_cnpj_card or status_geral in ["Pendencia_Bloqueante", "Pendencia_NaoBloqueante"]:
+            if cnpj_extraido:
+                logger.info(f"➕ Adicionando ação de Cartão CNPJ para CNPJ: {cnpj_extraido}")
                 acoes_requeridas.append({
                     "item": "Cartão CNPJ",
                     "acao": "GERAR_DOCUMENTO_VIA_API",
                     "parametros": {"cnpj": cnpj_extraido}
                 })
+            else:
+                logger.warning(f"⚠️ Necessidade de Cartão CNPJ detectada mas nenhum CNPJ válido encontrado no texto")
         
         logger.info(f"🎯 Processando resultado CrewAI para card {card_id}")
         logger.info(f"📊 Status Geral: {status_geral}")
@@ -1289,14 +1324,57 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
         if status_geral == "Pendencia_Bloqueante":
             logger.info(f"🚨 Processando PENDÊNCIA BLOQUEANTE para card {card_id}")
             
+            # Primeiro verificar se há ações de CNPJ a executar ANTES de mover o card
+            for acao in acoes_requeridas:
+                item = acao.get("item", "")
+                acao_tipo = acao.get("acao", "")
+                parametros = acao.get("parametros", {})
+                
+                logger.info(f"🔧 Executando ação bloqueante: {acao_tipo} para item: {item}")
+                
+                if acao_tipo == "GERAR_DOCUMENTO_VIA_API" and "Cartão CNPJ" in item:
+                    cnpj = parametros.get("cnpj")
+                    if cnpj:
+                        logger.info(f"🏢 Gerando Cartão CNPJ para CNPJ: {cnpj}")
+                        cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj)
+                        if cartao_gerado:
+                            result["actions_executed"].append("cartao_cnpj_generated")
+                            logger.info(f"✅ Cartão CNPJ gerado e armazenado automaticamente")
+                        else:
+                            result["errors"].append("failed_to_generate_cartao_cnpj")
+                            logger.error(f"❌ Falha ao gerar Cartão CNPJ para CNPJ: {cnpj}")
+                    else:
+                        logger.warning(f"⚠️ CNPJ não fornecido para geração de Cartão CNPJ")
+                        logger.info(f"🔍 Tentando extrair CNPJ do texto da pendência...")
+                        import re
+                        # Melhorar extração de CNPJ buscando em todo o conteúdo
+                        cnpj_pattern = r'\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}|\d{14}'
+                        texto_completo = f"{resumo_analise} {relatorio_detalhado}"
+                        for pendencia in pendencias:
+                            texto_completo += f" {pendencia.get('descricao', '')} {pendencia.get('acao_requerida', '')}"
+                        
+                        cnpj_matches = re.findall(cnpj_pattern, texto_completo)
+                        if cnpj_matches:
+                            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '').replace(' ', '')
+                            logger.info(f"🎯 CNPJ extraído da análise: {cnpj_extraido}")
+                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido)
+                            if cartao_gerado:
+                                result["actions_executed"].append("cartao_cnpj_generated")
+                                logger.info(f"✅ Cartão CNPJ gerado com CNPJ extraído")
+                            else:
+                                result["errors"].append("failed_to_generate_cartao_cnpj")
+                                logger.error(f"❌ Falha ao gerar Cartão CNPJ com CNPJ extraído")
+                        else:
+                            logger.warning(f"❌ Não foi possível extrair CNPJ para geração do cartão")
+            
             # Mover card para fase "Pendências Documentais"
-            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_PENDENCIAS)
+            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_PENDENCIAS)
             if moved:
                 result["actions_executed"].append("moved_to_pendencias")
-                logger.info(f"✅ Card movido para fase 'Pendências Documentais'")
+                logger.info(f"✅ Card movido para fase 'Pendências Documentais' (ID: {settings.PHASE_ID_PENDENCIAS})")
             else:
                 result["errors"].append("failed_to_move_to_pendencias")
-                logger.error(f"❌ Falha ao mover card para 'Pendências Documentais'")
+                logger.error(f"❌ Falha ao mover card para 'Pendências Documentais' (ID: {settings.PHASE_ID_PENDENCIAS})")
             
             # Enviar notificação WhatsApp para gestor
             whatsapp_sent = await send_whatsapp_notification(card_id, relatorio_detalhado)
@@ -1359,13 +1437,13 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                     result["actions_executed"].append("manager_request_logged")
             
             # Mover card para fase "Emitir documentos"
-            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_EMITIR_DOCS)
+            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_EMITIR_DOCS)
             if moved:
                 result["actions_executed"].append("moved_to_emitir_docs")
-                logger.info(f"✅ Card movido para fase 'Emitir documentos'")
+                logger.info(f"✅ Card movido para fase 'Emitir documentos' (ID: {settings.PHASE_ID_EMITIR_DOCS})")
             else:
                 result["errors"].append("failed_to_move_to_emitir_docs")
-                logger.error(f"❌ Falha ao mover card para 'Emitir documentos'")
+                logger.error(f"❌ Falha ao mover card para 'Emitir documentos' (ID: {settings.PHASE_ID_EMITIR_DOCS})")
         
         elif status_geral == "Aprovado":
             logger.info(f"✅ Processando APROVAÇÃO para card {card_id}")
@@ -1379,13 +1457,13 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                 logger.info(f"✅ Mensagem de aprovação atualizada")
             
             # Mover card para fase "Aprovado"
-            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_APROVADO)
+            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_APROVADO)
             if moved:
                 result["actions_executed"].append("moved_to_aprovado")
-                logger.info(f"✅ Card movido para fase 'Aprovado'")
+                logger.info(f"✅ Card movido para fase 'Aprovado' (ID: {settings.PHASE_ID_APROVADO})")
             else:
                 result["errors"].append("failed_to_move_to_aprovado")
-                logger.error(f"❌ Falha ao mover card para 'Aprovado'")
+                logger.error(f"❌ Falha ao mover card para 'Aprovado' (ID: {settings.PHASE_ID_APROVADO})")
         
         else:
             logger.error(f"❌ Status geral desconhecido: '{status_geral}' para card {card_id}")
@@ -2189,6 +2267,127 @@ async def test_robust_field_handling(request: Request):
     except Exception as e:
         logger.error(f"❌ Error en prueba robusta: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+@app.get("/debug/pipefy-config")
+async def debug_pipefy_config():
+    """
+    Endpoint de diagnóstico para verificar la configuración de Pipefy.
+    """
+    return {
+        "pipefy_config": {
+            "token_configured": bool(settings.PIPEFY_TOKEN),
+            "phase_id_aprovado": settings.PHASE_ID_APROVADO,
+            "phase_id_pendencias": settings.PHASE_ID_PENDENCIAS,
+            "phase_id_emitir_docs": settings.PHASE_ID_EMITIR_DOCS,
+            "field_id_informe": settings.FIELD_ID_INFORME
+        },
+        "twilio_config": {
+            "account_sid_configured": bool(settings.TWILIO_ACCOUNT_SID),
+            "auth_token_configured": bool(settings.TWILIO_AUTH_TOKEN),
+            "whatsapp_number": settings.TWILIO_WHATSAPP_NUMBER
+        },
+        "cnpja_config": {
+            "api_key_configured": bool(settings.CNPJA_API_KEY)
+        }
+    }
+
+@app.get("/debug/card-info/{card_id}")
+async def debug_card_info(card_id: str):
+    """
+    Endpoint de diagnóstico para obtener información completa de un card.
+    """
+    if not settings.PIPEFY_TOKEN:
+        return {"error": "Token Pipefy não configurado"}
+    
+    query = """
+    query GetCard($cardId: ID!) {
+        card(id: $cardId) {
+            id
+            title
+            current_phase {
+                id
+                name
+            }
+            pipe {
+                id
+                name
+                phases {
+                    id
+                    name
+                }
+            }
+            fields {
+                field {
+                    id
+                    label
+                    type
+                }
+                value
+            }
+        }
+    }
+    """
+    
+    variables = {"cardId": card_id}
+    headers = {
+        "Authorization": f"Bearer {settings.PIPEFY_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {"query": query, "variables": variables}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(PIPEFY_API_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "errors" in data:
+                return {"error": "GraphQL error", "details": data["errors"]}
+            
+            card_data = data.get("data", {}).get("card")
+            if not card_data:
+                return {"error": "Card not found"}
+            
+            return {
+                "card": card_data,
+                "phase_analysis": {
+                    "current_phase_id": card_data["current_phase"]["id"],
+                    "current_phase_name": card_data["current_phase"]["name"],
+                    "available_phases": [
+                        {"id": phase["id"], "name": phase["name"]} 
+                        for phase in card_data["pipe"]["phases"]
+                    ],
+                    "target_phases": {
+                        "aprovado": settings.PHASE_ID_APROVADO,
+                        "pendencias": settings.PHASE_ID_PENDENCIAS,
+                        "emitir_docs": settings.PHASE_ID_EMITIR_DOCS
+                    }
+                }
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/debug/test-move-card")
+async def debug_test_move_card(request: Request):
+    """
+    Endpoint de diagnóstico para testar movimiento de card.
+    """
+    data = await request.json()
+    card_id = data.get("card_id")
+    phase_id = data.get("phase_id")
+    
+    if not card_id or not phase_id:
+        return {"error": "card_id e phase_id são obrigatórios"}
+    
+    logger.info(f"🧪 TESTE: Movendo card {card_id} para phase {phase_id}")
+    success = await move_pipefy_card_to_phase(card_id, phase_id)
+    
+    return {
+        "success": success,
+        "card_id": card_id,
+        "phase_id": phase_id,
+        "message": "Movimento executado - verificar logs para detalhes"
+    }
 
 if __name__ == "__main__":
     import uvicorn
