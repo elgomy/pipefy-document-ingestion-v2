@@ -1190,10 +1190,76 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
         Dict com o resultado das ações executadas
     """
     try:
-        # Extrair dados da resposta CrewAI
+        # Extrair dados da resposta CrewAI (formato real)
         status_geral = crew_response.get("status_geral")
-        relatorio_detalhado = crew_response.get("relatorio_detalhado", "Relatório não gerado.")
-        acoes_requeridas = crew_response.get("acoes_requeridas", [])
+        resumo_analise = crew_response.get("resumo_analise", "")
+        pendencias = crew_response.get("pendencias", [])
+        documentos_analisados = crew_response.get("documentos_analisados", [])
+        proximos_passos = crew_response.get("proximos_passos", [])
+        recomendacoes = crew_response.get("recomendacoes", "")
+        
+        # Gerar relatório detalhado formatado em Markdown baseado nos dados do CrewAI
+        relatorio_detalhado = f"""# 📋 Relatório de Análise Documental
+
+## 📊 Status Geral: {status_geral}
+
+## 📝 Resumo da Análise
+{resumo_analise}
+
+## 📄 Documentos Analisados
+"""
+        
+        for doc in documentos_analisados:
+            nome = doc.get("nome", "N/A")
+            status_doc = doc.get("status", "N/A")
+            observacoes = doc.get("observacoes", "")
+            relatorio_detalhado += f"- **{nome}**: {status_doc}\n"
+            if observacoes:
+                relatorio_detalhado += f"  - {observacoes}\n"
+        
+        if pendencias:
+            relatorio_detalhado += "\n## ⚠️ Pendências Identificadas\n"
+            for pendencia in pendencias:
+                tipo = pendencia.get("tipo", "N/A")
+                categoria = pendencia.get("categoria", "N/A")
+                descricao = pendencia.get("descricao", "")
+                acao_requerida = pendencia.get("acao_requerida", "")
+                prazo_sugerido = pendencia.get("prazo_sugerido", "")
+                
+                relatorio_detalhado += f"### {categoria} ({tipo})\n"
+                relatorio_detalhado += f"**Descrição:** {descricao}\n\n"
+                relatorio_detalhado += f"**Ação Requerida:** {acao_requerida}\n\n"
+                if prazo_sugerido:
+                    relatorio_detalhado += f"**Prazo Sugerido:** {prazo_sugerido}\n\n"
+        
+        if proximos_passos:
+            relatorio_detalhado += "\n## 🎯 Próximos Passos\n"
+            for i, passo in enumerate(proximos_passos, 1):
+                relatorio_detalhado += f"{i}. {passo}\n"
+        
+        if recomendacoes:
+            relatorio_detalhado += f"\n## 💡 Recomendações\n{recomendacoes}\n"
+        
+        # Extrair ações requeridas das pendências para compatibilidade
+        acoes_requeridas = []
+        for pendencia in pendencias:
+            acao_requerida = pendencia.get("acao_requerida", "")
+            if "cartão cnpj" in acao_requerida.lower() or "cnpj" in acao_requerida.lower():
+                # Tentar extrair CNPJ do resumo ou buscar en documentos analisados
+                cnpj_extraido = None
+                # Lógica básica para extrair CNPJ (pode ser melhorada)
+                import re
+                cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
+                texto_completo = f"{resumo_analise} {relatorio_detalhado}"
+                cnpj_matches = re.findall(cnpj_pattern, texto_completo)
+                if cnpj_matches:
+                    cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '')
+                
+                acoes_requeridas.append({
+                    "item": "Cartão CNPJ",
+                    "acao": "GERAR_DOCUMENTO_VIA_API",
+                    "parametros": {"cnpj": cnpj_extraido}
+                })
         
         logger.info(f"🎯 Processando resultado CrewAI para card {card_id}")
         logger.info(f"📊 Status Geral: {status_geral}")
@@ -1255,15 +1321,32 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                 if acao_tipo == "GERAR_DOCUMENTO_VIA_API" and "Cartão CNPJ" in item:
                     cnpj = parametros.get("cnpj")
                     if cnpj:
+                        logger.info(f"🏢 Gerando Cartão CNPJ para CNPJ: {cnpj}")
                         cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj)
                         if cartao_gerado:
                             result["actions_executed"].append("cartao_cnpj_generated")
-                            logger.info(f"✅ Cartão CNPJ gerado automaticamente")
+                            logger.info(f"✅ Cartão CNPJ gerado e armazenado automaticamente")
                         else:
                             result["errors"].append("failed_to_generate_cartao_cnpj")
-                            logger.error(f"❌ Falha ao gerar Cartão CNPJ")
+                            logger.error(f"❌ Falha ao gerar Cartão CNPJ para CNPJ: {cnpj}")
                     else:
                         logger.warning(f"⚠️ CNPJ não fornecido para geração de Cartão CNPJ")
+                        logger.info(f"🔍 Tentando extrair CNPJ do texto da pendência...")
+                        import re
+                        cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
+                        cnpj_matches = re.findall(cnpj_pattern, acao.get("descricao", ""))
+                        if cnpj_matches:
+                            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '')
+                            logger.info(f"🎯 CNPJ extraído da descrição: {cnpj_extraido}")
+                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido)
+                            if cartao_gerado:
+                                result["actions_executed"].append("cartao_cnpj_generated")
+                                logger.info(f"✅ Cartão CNPJ gerado com CNPJ extraído")
+                            else:
+                                result["errors"].append("failed_to_generate_cartao_cnpj")
+                                logger.error(f"❌ Falha ao gerar Cartão CNPJ com CNPJ extraído")
+                        else:
+                            logger.warning(f"❌ Não foi possível extrair CNPJ para geração do cartão")
                 
                 elif acao_tipo == "NOTIFICAR_EQUIPE_CADASTRO":
                     # Por enquanto, o movimento do card serve como notificação
@@ -1517,7 +1600,7 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
 async def supabase_webhook(request: Request):
     """
     Webhook que recibe notificaciones de Supabase cuando se inserta un nuevo informe.
-    CORREGIDO: Usa FastAPI y sintaxis correcta de updateCardField.
+    VERSIÓN COMPLETA: Ejecuta toda la lógica de negocio incluyendo movimiento de cards y generación de cartão CNPJ.
     """
     try:
         data = await request.json()
@@ -1530,41 +1613,52 @@ async def supabase_webhook(request: Request):
         
         record = data.get('record', {})
         case_id = record.get('case_id')
-        informe = record.get('informe')
+        informe_json_str = record.get('informe')
         status = record.get('status')
         
-        if not case_id or not informe:
-            logger.warning(f"⚠️ Webhook com dados incompletos - case_id: {case_id}, informe presente: {bool(informe)}")
+        if not case_id or not informe_json_str:
+            logger.warning(f"⚠️ Webhook com dados incompletos - case_id: {case_id}, informe presente: {bool(informe_json_str)}")
             raise HTTPException(status_code=400, detail="case_id ou informe ausente")
         
-        logger.info(f"🎯 Processando informe para case_id: {case_id}")
+        logger.info(f"🎯 Processando informe completo para case_id: {case_id}")
         logger.info(f"   - Status: {status}")
-        logger.info(f"   - Tamanho do informe: {len(informe)} caracteres")
+        logger.info(f"   - Tamanho do informe: {len(informe_json_str)} caracteres")
         
-        # Ejecutar actualización del Pipefy de forma asíncrona
-        async def update_pipefy():
+        # Parsear el JSON del informe para obtener la estructura completa
+        try:
+            informe_data = json.loads(informe_json_str)
+            logger.info(f"📊 Informe parseado - Status geral: {informe_data.get('status_geral')}")
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Erro ao parsear JSON do informe: {e}")
+            raise HTTPException(status_code=400, detail="JSON do informe inválido")
+        
+        # Ejecutar el orquestrador principal de forma asíncrona
+        async def process_complete_workflow():
             try:
-                logger.info(f"🚀 Iniciando atualização do Pipefy para case_id: {case_id}")
+                logger.info(f"🚀 Iniciando fluxo completo para case_id: {case_id}")
                 
-                # Usar la función corregida con sintaxis oficial de Pipefy
-                success = await update_pipefy_informe_crewai_field(case_id, informe)
+                # 1. Executar orquestrador principal com todos os dados do CrewAI
+                orchestrator_result = await handle_crewai_analysis_result(case_id, informe_data)
                 
-                if success:
-                    logger.info(f"✅ Pipefy atualizado com sucesso para case_id: {case_id}")
+                if orchestrator_result.get("success"):
+                    logger.info(f"✅ Fluxo completo executado com sucesso para case_id: {case_id}")
+                    logger.info(f"🎯 Ações executadas: {orchestrator_result.get('actions_executed', [])}")
                 else:
-                    logger.error(f"❌ Falha ao atualizar Pipefy para case_id: {case_id}")
+                    logger.error(f"❌ Fluxo completo falhou para case_id: {case_id}")
+                    logger.error(f"❌ Erros: {orchestrator_result.get('errors', [])}")
                     
             except Exception as e:
-                logger.error(f"❌ Erro na atualização assíncrona do Pipefy: {e}")
+                logger.error(f"❌ Erro no fluxo completo para case_id {case_id}: {e}")
         
-        # Ejecutar en background
-        asyncio.create_task(update_pipefy())
+        # Executar em background
+        asyncio.create_task(process_complete_workflow())
         
         return {
             "status": "success", 
-            "message": "Webhook processado com sucesso",
+            "message": "Webhook processado - fluxo completo iniciado",
             "case_id": case_id,
-            "strategy": "corrected_updateCardField_syntax"
+            "strategy": "complete_workflow_orchestrator",
+            "informe_status": informe_data.get('status_geral', 'unknown')
         }
         
     except HTTPException:
@@ -1573,7 +1667,15 @@ async def supabase_webhook(request: Request):
         logger.error(f"❌ Erro no webhook Supabase: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🧪 ENDPOINT DE PRUEBA - Para verificar fase del card y movimiento
+# Agregar endpoint alternativo para el webhook
+@app.post('/webhook/supabase/informe-created')
+async def supabase_informe_created_webhook(request: Request):
+    """
+    Endpoint alternativo para el webhook de Supabase - redirige al principal.
+    """
+    logger.info("🔄 Webhook alternativo recebido - redirecionando para principal")
+    return await supabase_webhook(request)
+
 @app.post("/test/check-and-move-card")
 async def test_check_and_move_card(card_id: str):
     """
@@ -1604,7 +1706,6 @@ async def test_check_and_move_card(card_id: str):
         logger.error(f"❌ ERRO en test endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
-# 🧪 ENDPOINT DE PRUEBA - Para probar la integración completa con movimiento de fase
 @app.post("/test/update-pipefy-with-phase-handling")
 async def test_update_pipefy_with_phase_handling(
     case_id: str,
