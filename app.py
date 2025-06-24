@@ -25,6 +25,9 @@ from datetime import datetime
 # Cargar variables de entorno
 load_dotenv()
 
+# Importar settings de configuración
+from src.config.settings import settings
+
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -45,11 +48,12 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "+17245586619")
 CNPJA_API_KEY = os.getenv("CNPJA_API_KEY")
 
-# 🎯 IDs DE FASES DE PIPEFY SEGÚN PRD
-PHASE_ID_TRIAGEM = "338000020"  # Triagem Documentos AI
-PHASE_ID_PENDENCIAS = "338000017"  # Pendências Documentais
-PHASE_ID_EMITIR_DOCS = "338000019"  # Emitir documentos
-PHASE_ID_APROVADO = "338000018"  # Aprovado
+# 🎯 IDs DE FASES DE PIPEFY SEGÚN PRD (usando settings)
+PHASE_ID_TRIAGEM = "338000020"  # Triagem Documentos AI (fijo para webhook)
+# Los demás ahora vienen de settings para flexibilidad
+PHASE_ID_PENDENCIAS = settings.PHASE_ID_PENDENCIAS
+PHASE_ID_EMITIR_DOCS = settings.PHASE_ID_EMITIR_DOCS
+PHASE_ID_APROVADO = settings.PHASE_ID_APROVADO
 
 # 📋 CONSTANTES DE PIPEFY API
 PIPEFY_API_URL = "https://api.pipefy.com/graphql"
@@ -1264,17 +1268,40 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
             r'documento.*receita.*federal', r'rfb', r'cnpja'
         ]
         
-        # Buscar CNPJ válido no texto completo
-        cnpj_number_pattern = r'\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}|\d{14}'
+        # Buscar CNPJ válido no texto completo - MELHORADO
+        # Padrões mais flexíveis para CNPJ: com formato (11.222.333/0001-81) ou sem formato (11222333000181)
+        cnpj_patterns_flexible = [
+            r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}\b',  # Formato tradicional
+            r'\b\d{14}\b',  # Formato sem pontuação
+            r'CNPJ[:\s]*\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}',  # Com prefixo CNPJ
+            r'CNPJ[:\s]*\d{14}',  # Com prefixo CNPJ sem pontuação
+        ]
+        
         texto_completo = f"{resumo_analise} {relatorio_detalhado}"
         for pendencia in pendencias:
             texto_completo += f" {pendencia.get('descricao', '')} {pendencia.get('acao_requerida', '')}"
         
         cnpj_extraido = None
-        cnpj_matches = re.findall(cnpj_number_pattern, texto_completo, re.IGNORECASE)
-        if cnpj_matches:
-            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '').replace(' ', '')
-            logger.info(f"🎯 CNPJ encontrado automaticamente: {cnpj_extraido}")
+        logger.info(f"🔍 Buscando CNPJ no texto: {texto_completo[:200]}...")
+        
+        for pattern in cnpj_patterns_flexible:
+            cnpj_matches = re.findall(pattern, texto_completo, re.IGNORECASE)
+            if cnpj_matches:
+                # Pegar o primeiro match e limpar
+                raw_cnpj = cnpj_matches[0]
+                # Remover prefixo CNPJ: se existir
+                if 'CNPJ' in raw_cnpj.upper():
+                    raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
+                
+                cnpj_extraido = re.sub(r'[^\d]', '', raw_cnpj)  # Remove tudo que não é dígito
+                
+                # Validar que tem 14 dígitos
+                if len(cnpj_extraido) == 14:
+                    logger.info(f"🎯 CNPJ encontrado automaticamente: {cnpj_extraido} (padrão: {pattern})")
+                    break
+                else:
+                    logger.warning(f"⚠️ CNPJ inválido encontrado (tamanho {len(cnpj_extraido)}): {cnpj_extraido}")
+                    cnpj_extraido = None
         
         # Verificar se há necessidade de Cartão CNPJ
         need_cnpj_card = False
@@ -1347,17 +1374,34 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                         logger.warning(f"⚠️ CNPJ não fornecido para geração de Cartão CNPJ")
                         logger.info(f"🔍 Tentando extrair CNPJ do texto da pendência...")
                         import re
-                        # Melhorar extração de CNPJ buscando em todo o conteúdo
-                        cnpj_pattern = r'\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}|\d{14}'
-                        texto_completo = f"{resumo_analise} {relatorio_detalhado}"
-                        for pendencia in pendencias:
-                            texto_completo += f" {pendencia.get('descricao', '')} {pendencia.get('acao_requerida', '')}"
+                        # Usar padrões melhorados para CNPJ - igual ao anterior
+                        cnpj_patterns_improved = [
+                            r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}\b',
+                            r'\b\d{14}\b',
+                            r'CNPJ[:\s]*\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}',
+                            r'CNPJ[:\s]*\d{14}'
+                        ]
                         
-                        cnpj_matches = re.findall(cnpj_pattern, texto_completo)
-                        if cnpj_matches:
-                            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '').replace(' ', '')
-                            logger.info(f"🎯 CNPJ extraído da análise: {cnpj_extraido}")
-                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido)
+                        texto_completo_busca = f"{resumo_analise} {relatorio_detalhado}"
+                        for pendencia in pendencias:
+                            texto_completo_busca += f" {pendencia.get('descricao', '')} {pendencia.get('acao_requerida', '')}"
+                        
+                        cnpj_extraido_bloqueante = None
+                        for pattern in cnpj_patterns_improved:
+                            cnpj_matches = re.findall(pattern, texto_completo_busca, re.IGNORECASE)
+                            if cnpj_matches:
+                                raw_cnpj = cnpj_matches[0]
+                                if 'CNPJ' in raw_cnpj.upper():
+                                    raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
+                                cnpj_extraido_bloqueante = re.sub(r'[^\d]', '', raw_cnpj)
+                                if len(cnpj_extraido_bloqueante) == 14:
+                                    break
+                                else:
+                                    cnpj_extraido_bloqueante = None
+                        
+                        if cnpj_extraido_bloqueante:
+                            logger.info(f"🎯 CNPJ extraído da análise: {cnpj_extraido_bloqueante}")
+                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido_bloqueante)
                             if cartao_gerado:
                                 result["actions_executed"].append("cartao_cnpj_generated")
                                 logger.info(f"✅ Cartão CNPJ gerado com CNPJ extraído")
@@ -1368,13 +1412,13 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                             logger.warning(f"❌ Não foi possível extrair CNPJ para geração do cartão")
             
             # Mover card para fase "Pendências Documentais"
-            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_PENDENCIAS)
+            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_PENDENCIAS)
             if moved:
                 result["actions_executed"].append("moved_to_pendencias")
-                logger.info(f"✅ Card movido para fase 'Pendências Documentais' (ID: {settings.PHASE_ID_PENDENCIAS})")
+                logger.info(f"✅ Card movido para fase 'Pendências Documentais' (ID: {PHASE_ID_PENDENCIAS})")
             else:
                 result["errors"].append("failed_to_move_to_pendencias")
-                logger.error(f"❌ Falha ao mover card para 'Pendências Documentais' (ID: {settings.PHASE_ID_PENDENCIAS})")
+                logger.error(f"❌ Falha ao mover card para 'Pendências Documentais' (ID: {PHASE_ID_PENDENCIAS})")
             
             # Enviar notificação WhatsApp para gestor
             whatsapp_sent = await send_whatsapp_notification(card_id, relatorio_detalhado)
@@ -1411,12 +1455,32 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                         logger.warning(f"⚠️ CNPJ não fornecido para geração de Cartão CNPJ")
                         logger.info(f"🔍 Tentando extrair CNPJ do texto da pendência...")
                         import re
-                        cnpj_pattern = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{14}'
-                        cnpj_matches = re.findall(cnpj_pattern, acao.get("descricao", ""))
-                        if cnpj_matches:
-                            cnpj_extraido = cnpj_matches[0].replace('.', '').replace('/', '').replace('-', '')
-                            logger.info(f"🎯 CNPJ extraído da descrição: {cnpj_extraido}")
-                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido)
+                        # Usar padrões melhorados para CNPJ  
+                        cnpj_patterns_improved = [
+                            r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}\b',
+                            r'\b\d{14}\b',
+                            r'CNPJ[:\s]*\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}',
+                            r'CNPJ[:\s]*\d{14}'
+                        ]
+                        
+                        cnpj_extraido_local = None
+                        busca_texto = f"{acao.get('descricao', '')} {texto_completo}"
+                        
+                        for pattern in cnpj_patterns_improved:
+                            cnpj_matches = re.findall(pattern, busca_texto, re.IGNORECASE)
+                            if cnpj_matches:
+                                raw_cnpj = cnpj_matches[0]
+                                if 'CNPJ' in raw_cnpj.upper():
+                                    raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
+                                cnpj_extraido_local = re.sub(r'[^\d]', '', raw_cnpj)
+                                if len(cnpj_extraido_local) == 14:
+                                    break
+                                else:
+                                    cnpj_extraido_local = None
+                        
+                        if cnpj_extraido_local:
+                            logger.info(f"🎯 CNPJ extraído melhorado: {cnpj_extraido_local}")
+                            cartao_gerado = await gerar_e_armazenar_cartao_cnpj(card_id, cnpj_extraido_local)
                             if cartao_gerado:
                                 result["actions_executed"].append("cartao_cnpj_generated")
                                 logger.info(f"✅ Cartão CNPJ gerado com CNPJ extraído")
@@ -1437,13 +1501,13 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                     result["actions_executed"].append("manager_request_logged")
             
             # Mover card para fase "Emitir documentos"
-            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_EMITIR_DOCS)
+            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_EMITIR_DOCS)
             if moved:
                 result["actions_executed"].append("moved_to_emitir_docs")
-                logger.info(f"✅ Card movido para fase 'Emitir documentos' (ID: {settings.PHASE_ID_EMITIR_DOCS})")
+                logger.info(f"✅ Card movido para fase 'Emitir documentos' (ID: {PHASE_ID_EMITIR_DOCS})")
             else:
                 result["errors"].append("failed_to_move_to_emitir_docs")
-                logger.error(f"❌ Falha ao mover card para 'Emitir documentos' (ID: {settings.PHASE_ID_EMITIR_DOCS})")
+                logger.error(f"❌ Falha ao mover card para 'Emitir documentos' (ID: {PHASE_ID_EMITIR_DOCS})")
         
         elif status_geral == "Aprovado":
             logger.info(f"✅ Processando APROVAÇÃO para card {card_id}")
@@ -1457,13 +1521,13 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                 logger.info(f"✅ Mensagem de aprovação atualizada")
             
             # Mover card para fase "Aprovado"
-            moved = await move_pipefy_card_to_phase(card_id, settings.PHASE_ID_APROVADO)
+            moved = await move_pipefy_card_to_phase(card_id, PHASE_ID_APROVADO)
             if moved:
                 result["actions_executed"].append("moved_to_aprovado")
-                logger.info(f"✅ Card movido para fase 'Aprovado' (ID: {settings.PHASE_ID_APROVADO})")
+                logger.info(f"✅ Card movido para fase 'Aprovado' (ID: {PHASE_ID_APROVADO})")
             else:
                 result["errors"].append("failed_to_move_to_aprovado")
-                logger.error(f"❌ Falha ao mover card para 'Aprovado' (ID: {settings.PHASE_ID_APROVADO})")
+                logger.error(f"❌ Falha ao mover card para 'Aprovado' (ID: {PHASE_ID_APROVADO})")
         
         else:
             logger.error(f"❌ Status geral desconhecido: '{status_geral}' para card {card_id}")
@@ -2276,9 +2340,9 @@ async def debug_pipefy_config():
     return {
         "pipefy_config": {
             "token_configured": bool(settings.PIPEFY_TOKEN),
-            "phase_id_aprovado": settings.PHASE_ID_APROVADO,
-            "phase_id_pendencias": settings.PHASE_ID_PENDENCIAS,
-            "phase_id_emitir_docs": settings.PHASE_ID_EMITIR_DOCS,
+            "phase_id_aprovado": PHASE_ID_APROVADO,
+            "phase_id_pendencias": PHASE_ID_PENDENCIAS,
+            "phase_id_emitir_docs": PHASE_ID_EMITIR_DOCS,
             "field_id_informe": settings.FIELD_ID_INFORME
         },
         "twilio_config": {
@@ -2358,9 +2422,9 @@ async def debug_card_info(card_id: str):
                         for phase in card_data["pipe"]["phases"]
                     ],
                     "target_phases": {
-                        "aprovado": settings.PHASE_ID_APROVADO,
-                        "pendencias": settings.PHASE_ID_PENDENCIAS,
-                        "emitir_docs": settings.PHASE_ID_EMITIR_DOCS
+                        "aprovado": PHASE_ID_APROVADO,
+                        "pendencias": PHASE_ID_PENDENCIAS,
+                        "emitir_docs": PHASE_ID_EMITIR_DOCS
                     }
                 }
             }
