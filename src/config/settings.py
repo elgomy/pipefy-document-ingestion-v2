@@ -29,7 +29,7 @@ class Settings:
     # Para Sandbox usa: whatsapp:+14155238886 (probado exitosamente con curl)
     TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
     
-    # CNPJá Configuration
+    # CNPJá Configuration - API Key testada exitosamente
     CNPJA_API_KEY: str = os.getenv("CNPJA_API_KEY", "")
     
     # CrewAI Service Communication

@@ -514,7 +514,7 @@ class CNPJClient:
     @with_error_handling("cnpj_api", context={"operation": "download_cnpj_certificate_pdf"})
     async def download_cnpj_certificate_pdf(self, cnpj: str, output_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """
-        Descarga certificado PDF de CNPJ.
+        Descarga certificado PDF de CNPJ usando la API de CNPJá.
         
         Args:
             cnpj: CNPJ para descargar certificado
@@ -527,8 +527,49 @@ class CNPJClient:
             CNPJAPIError: Si hay error al descargar el PDF
         """
         try:
-            # Por ahora, generar PDF de prueba
-            pdf_content = self._generate_mock_pdf(cnpj)
+            # Limpiar y validar CNPJ
+            clean_cnpj = self._clean_cnpj(cnpj)
+            if not self._validate_cnpj(clean_cnpj):
+                raise CNPJAPIError(f"CNPJ inválido: {cnpj}")
+            
+            # Verificar si tenemos API key
+            if not self.cnpja_api_key:
+                logger.warning("CNPJá API key não configurada, usando PDF mock")
+                pdf_content = self._generate_mock_pdf(clean_cnpj)
+                api_source = "Mock"
+            else:
+                # Usar API real de CNPJá
+                logger.info(f"Descargando certificado PDF para CNPJ: {clean_cnpj}")
+                
+                url = f"https://api.cnpja.com/rfb/certificate"
+                headers = {
+                    "Authorization": self.cnpja_api_key,
+                    "User-Agent": "Pipefy-Document-Ingestion/1.0"
+                }
+                params = {
+                    "taxId": clean_cnpj,
+                    "pages": "REGISTRATION"
+                }
+                
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.get(url, headers=headers, params=params)
+                    
+                    if response.status_code == 401:
+                        raise CNPJAPIError(f"API key CNPJá inválida ou expirada", 401, "CNPJá")
+                    elif response.status_code == 404:
+                        raise CNPJAPIError(f"CNPJ não encontrado: {clean_cnpj}", 404, "CNPJá")
+                    elif response.status_code != 200:
+                        raise CNPJAPIError(f"Erro na API CNPJá: {response.status_code} - {response.text}", response.status_code, "CNPJá")
+                    
+                    # Verificar se o conteúdo é PDF
+                    content_type = response.headers.get("content-type", "")
+                    if "pdf" not in content_type.lower():
+                        logger.warning(f"Resposta não é PDF: {content_type}")
+                        # Tentar usar o conteúdo mesmo assim
+                    
+                    pdf_content = response.content
+                    api_source = "CNPJá"
+                    logger.info(f"✅ PDF descargado exitosamente: {len(pdf_content)} bytes")
             
             # Si se especificó ruta de salida, guardar archivo
             if output_path:
@@ -536,17 +577,21 @@ class CNPJClient:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, 'wb') as f:
                     f.write(pdf_content)
+                logger.info(f"PDF guardado en: {output_path}")
             
             # Preparar respuesta
             response = {
                 "success": True,
                 "file_size_bytes": len(pdf_content),
-                "api_source": "Mock",
-                "content": pdf_content
+                "api_source": api_source,
+                "content": pdf_content,
+                "cnpj": clean_cnpj
             }
             
             return response
             
+        except CNPJAPIError:
+            raise
         except Exception as e:
             raise CNPJAPIError(f"Error al descargar certificado PDF: {str(e)}")
             
