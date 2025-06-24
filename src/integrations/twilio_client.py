@@ -81,129 +81,52 @@ class TwilioClient:
             raise TwilioAPIError(f"Error de inicialización: {e}")
     
     @with_error_handling("twilio", context={"operation": "send_whatsapp_message"})
-    async def send_whatsapp_message(
-        self,
-        to_number: str,
-        message: str,
-        media_url: Optional[str] = None,
-        case_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    async def send_whatsapp_message(self, to: str, message: str) -> bool:
         """
-        Envía un mensaje de WhatsApp a un número específico.
+        Envía un mensaje de WhatsApp usando Twilio.
         
         Args:
-            to_number (str): Número de destino en formato internacional (+5511999999999)
-            message (str): Contenido del mensaje
-            media_url (str, optional): URL de media para adjuntar
-            case_id (str, optional): ID del caso para tracking
+            to: Número de teléfono destino (formato: +1234567890)
+            message: Contenido del mensaje
             
         Returns:
-            Dict con el resultado del envío
+            bool: True si el mensaje se envió exitosamente
         """
         try:
-            # Validar número de teléfono
-            validation_result = self.validate_phone_number(to_number)
-            if not validation_result["valid"]:
-                self.message_metrics["failed"] += 1
-                return {
-                    "success": False,
-                    "message_sid": None,
-                    "status": "failed",
-                    "to_number": to_number,
-                    "from_number": self.whatsapp_number,
-                    "message_body": message,
-                    "error_code": "INVALID_PHONE",
-                    "error_message": validation_result["error"]
-                }
+            # Formatear número de destino para WhatsApp
+            whatsapp_to = f"whatsapp:{to}" if not to.startswith("whatsapp:") else to
             
-            formatted_number = validation_result["formatted_number"]
+            # Asegurar que el número FROM también tenga el prefijo whatsapp:
+            whatsapp_from = f"whatsapp:{self.whatsapp_number}" if not self.whatsapp_number.startswith("whatsapp:") else self.whatsapp_number
             
-            # Formatear número para WhatsApp
-            whatsapp_to = f"whatsapp:{formatted_number}"
-            whatsapp_from = f"whatsapp:{self.whatsapp_number}"
+            logger.info(f"Enviando WhatsApp desde {whatsapp_from} hacia {whatsapp_to}")
             
-            # Preparar parámetros del mensaje
-            message_params = {
-                'body': message[:1600],  # Limitar mensaje a 1600 caracteres
-                'from_': whatsapp_from,
-                'to': whatsapp_to
-            }
+            message_obj = self.client.messages.create(
+                body=message,
+                from_=whatsapp_from,
+                to=whatsapp_to
+            )
             
-            # Agregar media si se proporciona
-            if media_url:
-                message_params['media_url'] = [media_url]
-            
-            # Enviar mensaje
-            logger.info(f"Enviando WhatsApp a {formatted_number} (caso: {case_id or 'N/A'})")
-            twilio_message = self.client.messages.create(**message_params)
-            
-            # Actualizar métricas
-            self.message_metrics["sent"] += 1
-            
-            result = {
-                "success": True,
-                "message_sid": twilio_message.sid,
-                "status": twilio_message.status,
-                "to_number": formatted_number,
-                "from_number": self.whatsapp_number,
-                "message_body": message,
-                "error_code": None,
-                "error_message": None,
-                "case_id": case_id
-            }
-            
-            logger.info(f"WhatsApp enviado exitosamente. SID: {twilio_message.sid}")
-            return result
-            
-        except TwilioException as e:
-            # Manejar errores específicos de Twilio
-            error_code = getattr(e, 'code', None)
-            error_msg = f"Error de Twilio enviando WhatsApp a {to_number}: {e}"
-            
-            # Actualizar métricas específicas
-            if error_code == 20429:  # Rate limit
-                self.message_metrics["rate_limited"] += 1
-                logger.warning(f"Rate limit alcanzado para {to_number}")
-            elif error_code in [20003, 20401]:  # Authentication errors
-                self.message_metrics["authentication_errors"] += 1
-                logger.error(f"Error de autenticación Twilio: {e}")
-            else:
-                self.message_metrics["failed"] += 1
-            
-            # Agregar a cola de reintentos si es un error temporal
-            if case_id and self._is_retryable_error(error_code):
-                await self._add_to_retry_queue(to_number, message, case_id, str(e), media_url)
-            
-            logger.error(error_msg)
-            
-            return {
-                "success": False,
-                "message_sid": None,
-                "status": "failed",
-                "to_number": to_number,
-                "from_number": self.whatsapp_number,
-                "message_body": message,
-                "error_code": error_code,
-                "error_message": str(e),
-                "case_id": case_id
-            }
+            logger.info(f"✅ Mensaje WhatsApp enviado exitosamente. SID: {message_obj.sid}")
+            return True
             
         except Exception as e:
-            self.message_metrics["failed"] += 1
-            error_msg = f"Error inesperado enviando WhatsApp a {to_number}: {e}"
-            logger.error(error_msg)
+            error_msg = str(e)
+            logger.error(f"❌ Error enviando mensaje WhatsApp: {error_msg}")
             
-            return {
-                "success": False,
-                "message_sid": None,
-                "status": "failed",
-                "to_number": to_number,
-                "from_number": self.whatsapp_number,
-                "message_body": message,
-                "error_code": "UNKNOWN_ERROR",
-                "error_message": str(e),
-                "case_id": case_id
-            }
+            # Mensajes de ayuda específicos para errores comunes
+            if "21211" in error_msg:  # Invalid 'To' phone number
+                logger.error("💡 SOLUCIÓN: Verifica que el número destino sea válido y esté en formato internacional (+1234567890)")
+            elif "21614" in error_msg:  # 'To' number is not a valid mobile number
+                logger.error("💡 SOLUCIÓN: El número destino debe ser un número móvil válido")
+            elif "63007" in error_msg:  # Sandbox error - recipient not joined
+                logger.error("💡 SOLUCIÓN SANDBOX: El destinatario debe enviar un mensaje 'join <código>' al número sandbox +14155238886")
+            elif "21608" in error_msg or "authenticate" in error_msg.lower():
+                logger.error("💡 SOLUCIÓN: Verifica tus credenciales TWILIO_ACCOUNT_SID y TWILIO_AUTH_TOKEN")
+            elif "21606" in error_msg:  # Trial account restrictions
+                logger.error("💡 SOLUCIÓN: Actualiza tu cuenta Twilio de Trial a Paid para enviar a números no verificados")
+                
+            return False
     
     async def send_blocking_issues_notification(
         self,
