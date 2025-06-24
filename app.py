@@ -945,9 +945,68 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
 
 # 🆕 FUNCIONES DE INTEGRACIÓN SEGÚN PRD
 
+async def get_card_current_phase_info(card_id: str) -> Optional[dict]:
+    """
+    Obtiene información de la fase actual del card para diagnóstico.
+    
+    Args:
+        card_id: ID del card
+        
+    Returns:
+        dict: Información de la fase actual con id y name, o None si hay error
+    """
+    if not PIPEFY_TOKEN:
+        logger.error("❌ Token Pipefy não configurado")
+        return None
+    
+    query = """
+    query GetCardCurrentPhase($cardId: ID!) {
+        card(id: $cardId) {
+            id
+            title
+            current_phase {
+                id
+                name
+            }
+        }
+    }
+    """
+    
+    variables = {"cardId": card_id}
+    headers = {
+        "Authorization": f"Bearer {PIPEFY_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(PIPEFY_API_URL, json={"query": query, "variables": variables}, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if "errors" not in data and data.get("data", {}).get("card"):
+                    card_data = data["data"]["card"]
+                    phase_info = card_data.get("current_phase", {})
+                    return {
+                        "id": phase_info.get("id"),
+                        "name": phase_info.get("name"),
+                        "card_title": card_data.get("title")
+                    }
+                else:
+                    logger.error(f"❌ Erro GraphQL ao obter fase atual: {data.get('errors', 'Unknown error')}")
+            else:
+                logger.error(f"❌ HTTP {response.status_code} ao obter fase atual do card")
+                
+    except Exception as e:
+        logger.error(f"❌ Exceção ao obter fase atual: {str(e)}")
+    
+    return None
+
+
 async def move_pipefy_card_to_phase(card_id: str, phase_id: str) -> bool:
     """
     Mueve un card de Pipefy a una nueva fase usando la API GraphQL.
+    ACTUALIZADO según documentación oficial de Pipefy.
     
     Args:
         card_id: ID del card a mover
@@ -960,43 +1019,54 @@ async def move_pipefy_card_to_phase(card_id: str, phase_id: str) -> bool:
         logger.error("❌ Token Pipefy não configurado para mover card")
         return False
     
-    mutation = """
-    mutation MoveCardToPhase($cardId: ID!, $phaseId: ID!) {
-        moveCardToPhase(input: {card_id: $cardId, destination_phase_id: $phaseId}) {
-            card {
+    # PASO 1: Obtener información de la fase actual para diagnóstico
+    current_phase_info = await get_card_current_phase_info(card_id)
+    if current_phase_info:
+        logger.info(f"📍 DIAGNÓSTICO DE MOVIMIENTO:")
+        logger.info(f"   🎯 Card: {card_id} - '{current_phase_info.get('card_title', 'Sin título')}'")
+        logger.info(f"   📍 Fase ACTUAL: {current_phase_info.get('name')} (ID: {current_phase_info.get('id')})")
+        logger.info(f"   📍 Fase DESTINO: {phase_id}")
+        
+        # Verificar si ya está en la fase destino
+        if current_phase_info.get('id') == phase_id:
+            logger.info(f"✅ Card ya está en la fase destino {phase_id}")
+            return True
+    else:
+        logger.warning(f"⚠️ No se pudo obtener información de la fase actual para card {card_id}")
+    
+    # PASO 2: GraphQL mutation según documentación oficial de Pipefy
+    # Formato simplificado sin variables para evitar errores de sintaxis
+    mutation = f"""
+    mutation {{
+        moveCardToPhase(input: {{
+            card_id: {card_id}
+            destination_phase_id: {phase_id}
+        }}) {{
+            card {{
                 id
-                current_phase {
+                current_phase {{
                     id
                     name
-                }
-            }
-        }
-    }
+                }}
+            }}
+        }}
+    }}
     """
-    
-    variables = {
-        "cardId": card_id,
-        "phaseId": phase_id
-    }
     
     headers = {
         "Authorization": f"Bearer {PIPEFY_TOKEN}",
         "Content-Type": "application/json"
     }
     
-    payload = {
-        "query": mutation,
-        "variables": variables
-    }
+    payload = {"query": mutation}
     
     try:
-        logger.info(f"🔄 Iniciando movimiento de card {card_id} hacia phase {phase_id}")
+        logger.info(f"🔄 Ejecutando movimiento de card...")
         logger.info(f"🔍 Payload GraphQL: {json.dumps(payload, indent=2)}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(PIPEFY_API_URL, json=payload, headers=headers)
             logger.info(f"📊 HTTP Status: {response.status_code}")
-            logger.info(f"📋 Response Headers: {dict(response.headers)}")
             
             response.raise_for_status()
             data = response.json()
@@ -1008,12 +1078,19 @@ async def move_pipefy_card_to_phase(card_id: str, phase_id: str) -> bool:
                     error_msg = error.get('message', 'Unknown error')
                     error_code = error.get('extensions', {}).get('code', 'Unknown code')
                     logger.error(f"   - {error_code}: {error_msg}")
+                    
+                    # Mensaje específico para errores de restricción de fase
+                    if "Cannot move" in error_msg or "PHASE_TRANSITION_ERROR" in error_code:
+                        logger.error(f"🚨 FASE RESTRICTION ERROR: La fase destino {phase_id} no permite el movimiento desde la fase actual")
+                        logger.error(f"💡 SOLUCIÓN: Verificar 'Move card settings' en la UI de Pipefy para esta fase")
+                        
                 return False
             
             move_result = data.get("data", {}).get("moveCardToPhase")
             if move_result and move_result.get("card"):
                 new_phase = move_result["card"]["current_phase"]
-                logger.info(f"✅ Card {card_id} movido para fase: {new_phase['name']} (ID: {new_phase['id']})")
+                logger.info(f"✅ Card {card_id} movido exitosamente!")
+                logger.info(f"   📍 Nueva fase: {new_phase['name']} (ID: {new_phase['id']})")
                 return True
             else:
                 logger.error(f"❌ Resposta inesperada ao mover card {card_id}: {data}")
@@ -1048,6 +1125,7 @@ async def get_manager_phone_for_card(card_id: str) -> Optional[str]:
 async def send_whatsapp_notification(card_id: str, relatorio_detalhado: str) -> bool:
     """
     Envia notificação via WhatsApp usando Twilio para pendências bloqueantes.
+    MELHORADO com diagnóstico de credenciais.
     
     Args:
         card_id: ID do card com pendência
@@ -1056,8 +1134,16 @@ async def send_whatsapp_notification(card_id: str, relatorio_detalhado: str) -> 
     Returns:
         bool: True se a notificação foi enviada com sucesso
     """
+    # Verificar credenciais Twilio com diagnóstico detalhado
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         logger.error("❌ Credenciais Twilio não configuradas")
+        logger.error(f"   📊 TWILIO_ACCOUNT_SID configurado: {'✅ Sim' if TWILIO_ACCOUNT_SID else '❌ Não'}")
+        logger.error(f"   📊 TWILIO_AUTH_TOKEN configurado: {'✅ Sim' if TWILIO_AUTH_TOKEN else '❌ Não'}")
+        logger.error(f"   📊 TWILIO_WHATSAPP_NUMBER configurado: {'✅ Sim' if TWILIO_WHATSAPP_NUMBER else '❌ Não'}")
+        return False
+    
+    if not TWILIO_WHATSAPP_NUMBER:
+        logger.error("❌ TWILIO_WHATSAPP_NUMBER não configurado")
         return False
     
     try:
@@ -1069,6 +1155,13 @@ async def send_whatsapp_notification(card_id: str, relatorio_detalhado: str) -> 
         if not manager_phone:
             logger.error(f"❌ Número do gestor não encontrado para card {card_id}")
             return False
+        
+        # Log de diagnóstico de credenciais mascaradas
+        logger.info(f"📊 DIAGNÓSTICO TWILIO:")
+        logger.info(f"   📞 Account SID: {TWILIO_ACCOUNT_SID[:8]}...{TWILIO_ACCOUNT_SID[-4:] if len(TWILIO_ACCOUNT_SID) > 8 else TWILIO_ACCOUNT_SID}")
+        logger.info(f"   🔑 Auth Token: {TWILIO_AUTH_TOKEN[:8]}...{TWILIO_AUTH_TOKEN[-4:] if len(TWILIO_AUTH_TOKEN) > 8 else TWILIO_AUTH_TOKEN}")
+        logger.info(f"   📱 WhatsApp Number: {TWILIO_WHATSAPP_NUMBER}")
+        logger.info(f"   📱 Destinatário: {manager_phone}")
         
         # Criar cliente Twilio
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -1098,7 +1191,110 @@ async def send_whatsapp_notification(card_id: str, relatorio_detalhado: str) -> 
         return False
     except Exception as e:
         logger.error(f"❌ Erro ao enviar notificação WhatsApp: {e}")
+        logger.error(f"   📊 Tipo do erro: {type(e).__name__}")
+        logger.error(f"   📊 Detalhes: {str(e)}")
+        
+        # Diagnóstico específico para erros de autenticação
+        if "401" in str(e) or "Authenticate" in str(e):
+            logger.error("🚨 ERRO DE AUTENTICAÇÃO TWILIO:")
+            logger.error("   💡 Verifique se as credenciais estão corretas no ambiente Render")
+            logger.error("   💡 Account SID deve começar com 'AC'")
+            logger.error("   💡 Auth Token deve ter 32 caracteres")
+            
         return False
+
+async def extract_cnpj_from_pipefy_card(card_id: str) -> Optional[str]:
+    """
+    Extrae CNPJ de los campos del card de Pipefy como fallback.
+    
+    Args:
+        card_id: ID del card de Pipefy
+        
+    Returns:
+        str: CNPJ encontrado (solo dígitos) o None si no se encuentra
+    """
+    if not PIPEFY_TOKEN:
+        logger.error("Token Pipefy não configurado para extrair CNPJ do card")
+        return None
+    
+    query = """
+    query GetCardFields($cardId: ID!) {
+        card(id: $cardId) {
+            id
+            title
+            fields {
+                field {
+                    id
+                    label
+                    type
+                }
+                value
+            }
+        }
+    }
+    """
+    
+    variables = {"cardId": card_id}
+    headers = {
+        "Authorization": f"Bearer {PIPEFY_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {"query": query, "variables": variables}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(PIPEFY_API_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "errors" in data:
+                logger.error(f"❌ Erro GraphQL ao obter campos do card: {data['errors']}")
+                return None
+            
+            card_data = data.get("data", {}).get("card")
+            if not card_data:
+                logger.warning(f"Card {card_id} não encontrado")
+                return None
+            
+            # Buscar CNPJ nos campos do card
+            import re
+            cnpj_patterns_card = [
+                r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}\b',
+                r'\b\d{14}\b',
+                r'CNPJ[:\s]*\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[\/\s]?\d{4}[\-\s]?\d{2}',
+                r'CNPJ[:\s]*\d{14}'
+            ]
+            
+            # Buscar en todos os campos
+            search_text = f"{card_data.get('title', '')} "
+            for field_data in card_data.get('fields', []):
+                field_info = field_data.get('field', {})
+                field_label = field_info.get('label', '')
+                field_value = field_data.get('value', '')
+                
+                if field_value:
+                    search_text += f"{field_label}: {field_value} "
+            
+            logger.info(f"🔍 Buscando CNPJ nos campos do card: {search_text[:200]}...")
+            
+            for pattern in cnpj_patterns_card:
+                cnpj_matches = re.findall(pattern, search_text, re.IGNORECASE)
+                if cnpj_matches:
+                    raw_cnpj = cnpj_matches[0]
+                    if 'CNPJ' in raw_cnpj.upper():
+                        raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
+                    
+                    cnpj_clean = re.sub(r'[^\d]', '', raw_cnpj)
+                    if len(cnpj_clean) == 14:
+                        logger.info(f"✅ CNPJ extraído do card: {cnpj_clean}")
+                        return cnpj_clean
+            
+            logger.warning(f"❌ Nenhum CNPJ válido encontrado nos campos do card {card_id}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Erro ao extrair CNPJ do card {card_id}: {e}")
+        return None
 
 async def gerar_e_armazenar_cartao_cnpj(case_id: str, cnpj: str) -> bool:
     """
@@ -1321,7 +1517,32 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                     "parametros": {"cnpj": cnpj_extraido}
                 })
             else:
+                # FALLBACK: Tentar extrair CNPJ dos campos do card de Pipefy
                 logger.warning(f"⚠️ Necessidade de Cartão CNPJ detectada mas nenhum CNPJ válido encontrado no texto")
+                logger.info(f"🔍 Tentando FALLBACK: buscar CNPJ nos campos do card {card_id}")
+                cnpj_from_card = await extract_cnpj_from_pipefy_card(card_id)
+                if cnpj_from_card:
+                    logger.info(f"✅ CNPJ encontrado via FALLBACK do card: {cnpj_from_card}")
+                    acoes_requeridas.append({
+                        "item": "Cartão CNPJ",
+                        "acao": "GERAR_DOCUMENTO_VIA_API",
+                        "parametros": {"cnpj": cnpj_from_card}
+                    })
+                else:
+                    logger.error(f"❌ CNPJ não encontrado nem no texto nem nos campos do card {card_id}")
+                
+                # 🆕 TENTAR OBTER CNPJ DO CARD DE PIPEFY COMO FALLBACK
+                logger.info(f"🔍 Tentando obter CNPJ dos campos do card {card_id}")
+                cnpj_from_card = await extract_cnpj_from_pipefy_card(card_id)
+                if cnpj_from_card:
+                    logger.info(f"✅ CNPJ encontrado no card: {cnpj_from_card}")
+                    acoes_requeridas.append({
+                        "item": "Cartão CNPJ",
+                        "acao": "GERAR_DOCUMENTO_VIA_API",
+                        "parametros": {"cnpj": cnpj_from_card}
+                    })
+                else:
+                    logger.warning(f"❌ Não foi possível obter CNPJ nem do texto nem do card")
         
         logger.info(f"🎯 Processando resultado CrewAI para card {card_id}")
         logger.info(f"📊 Status Geral: {status_geral}")
