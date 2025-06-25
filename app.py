@@ -2301,6 +2301,115 @@ async def get_documents_for_case(case_id: str):
             detail=f"Error interno al obtener documentos: {str(e)}"
         )
 
+@app.post("/api/v1/cliente/enriquecer")
+async def enriquecer_cliente(request: Request):
+    """
+    Endpoint para enriquecer datos de cliente con CNPJ.
+    Usado por herramientas CrewAI.
+    """
+    try:
+        body = await request.json()
+        cnpj = body.get("cnpj")
+        case_id = body.get("case_id")
+        
+        if not cnpj:
+            return {"success": False, "message": "CNPJ es requerido"}
+        
+        logger.info(f"🔍 Enriqueciendo cliente CNPJ: {cnpj} para case_id: {case_id}")
+        
+        # Generar cartão CNPJ (esto ya existe)
+        result = await gerar_e_armazenar_cartao_cnpj(case_id, cnpj)
+        
+        if result:
+            return {
+                "success": True,
+                "message": f"Cliente CNPJ {cnpj} enriquecido exitosamente",
+                "data": {"cnpj": cnpj, "case_id": case_id}
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Error al enriquecer cliente CNPJ {cnpj}"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error en enriquecer_cliente: {e}")
+        return {"success": False, "message": f"Error interno: {str(e)}"}
+
+@app.post("/api/v1/whatsapp/enviar")
+async def enviar_whatsapp(request: Request):
+    """
+    Endpoint para enviar notificaciones WhatsApp.
+    Usado por herramientas CrewAI.
+    """
+    try:
+        body = await request.json()
+        card_id = body.get("card_id")
+        mensaje = body.get("mensaje")
+        
+        if not card_id or not mensaje:
+            return {"success": False, "message": "card_id y mensaje son requeridos"}
+        
+        logger.info(f"📱 Enviando WhatsApp para card_id: {card_id}")
+        
+        # Usar función existente
+        result = await send_whatsapp_notification(card_id, mensaje)
+        
+        if result:
+            return {
+                "success": True,
+                "message": f"WhatsApp enviado exitosamente para card {card_id}"
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Error al enviar WhatsApp para card {card_id}"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error en enviar_whatsapp: {e}")
+        return {"success": False, "message": f"Error interno: {str(e)}"}
+
+@app.post("/api/v1/pipefy/actualizar")
+async def actualizar_pipefy(request: Request):
+    """
+    Endpoint para actualizar campos en Pipefy.
+    Usado por herramientas CrewAI.
+    """
+    try:
+        body = await request.json()
+        card_id = body.get("card_id")
+        campo = body.get("campo")
+        valor = body.get("valor")
+        
+        if not card_id or not campo or not valor:
+            return {"success": False, "message": "card_id, campo y valor son requeridos"}
+        
+        logger.info(f"📝 Actualizando campo '{campo}' en card: {card_id}")
+        
+        # Para campo "informe_crewai", usar función específica
+        if campo.lower() in ["informe_crewai", "informe_crewai_2"]:
+            result = await update_pipefy_informe_crewai_field(card_id, valor)
+        else:
+            # Para otros campos, se podría implementar una función genérica
+            result = False
+            logger.warning(f"⚠️ Campo '{campo}' no soportado actualmente")
+        
+        if result:
+            return {
+                "success": True,
+                "message": f"Campo '{campo}' actualizado exitosamente en card {card_id}"
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Error al actualizar campo '{campo}' en card {card_id}"
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error en actualizar_pipefy: {e}")
+        return {"success": False, "message": f"Error interno: {str(e)}"}
+
 @app.get("/health")
 async def health_check():
     """Endpoint de verificação de saúde con estado del servicio CrewAI."""
