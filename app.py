@@ -763,7 +763,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
         
         logger.info(f"🔗 Llamando al servicio CrewAI para case_id: {case_id}")
         logger.info(f"📄 Documentos a analizar: {len(documents)}")
-        logger.info(f"🎯 URL CrewAI: {CREWAI_SERVICE_URL}/analyze/sync")
+        logger.info(f"🎯 URL CrewAI: {CREWAI_SERVICE_URL}/analyze")
         
         # MEJORADO: Primero verificar que el servicio esté despierto
         logger.info("🏥 Verificando estado del servicio CrewAI...")
@@ -783,7 +783,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
         # TIMEOUT AUMENTADO: 15 minutos para manejar cold starts + análisis completo
         async with httpx.AsyncClient(timeout=900.0) as client:  
             response = await client.post(
-                f"{CREWAI_SERVICE_URL}/analyze/sync",
+                f"{CREWAI_SERVICE_URL}/analyze",
                 json=analysis_request.model_dump()
             )
             
@@ -857,7 +857,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                 
                 async with httpx.AsyncClient(timeout=900.0) as retry_client:
                     retry_response = await retry_client.post(
-                        f"{CREWAI_SERVICE_URL}/analyze/sync",
+                        f"{CREWAI_SERVICE_URL}/analyze",
                         json=analysis_request.model_dump()
                     )
                     
