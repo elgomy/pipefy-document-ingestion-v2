@@ -376,17 +376,30 @@ class CNPJService:
                 supabase_document_id = None
                 if save_to_database:
                     document_data = {
+                        "name": f"Cartão CNPJ - {cnpj_data.razao_social}",
                         "case_id": case_id,
-                        "document_name": "cartao_cnpj_gerado.pdf",
                         "document_tag": "cartao_cnpj",
+                        "document_type": "cartao_cnpj",
                         "file_url": public_url,
-                        "file_size_bytes": pdf_info.get("file_size_bytes", len(pdf_info["content"])),
-                        "uploaded_at": datetime.now().isoformat()
+                        "status": "uploaded",
+                        "metadata": {
+                            "cnpj": cnpj,
+                            "razao_social": cnpj_data.razao_social,
+                            "file_size_bytes": pdf_info.get("file_size_bytes", len(pdf_info["content"])),
+                            "api_source": cnpj_data.api_source,
+                            "generated_by": "cnpj_service",
+                            "uploaded_at": datetime.now().isoformat()
+                        }
                     }
                     
-                    db_result = await self.client.table("documents").insert(document_data).execute()
-                    if db_result.data:
-                        supabase_document_id = db_result.data[0].get("id")
+                    try:
+                        db_result = await self.client.table("documents").insert(document_data).execute()
+                        if db_result.data:
+                            supabase_document_id = db_result.data[0].get("id")
+                            logger.info(f"Documento registrado na tabela 'documents' com ID: {supabase_document_id}")
+                    except Exception as db_error:
+                        logger.warning(f"Erro ao registrar documento na tabela 'documents': {db_error}")
+                            # Não falhar o processo se houver erro no registro da tabela
                 
                 # Preparar resposta no formato esperado
                 result = {
