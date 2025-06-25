@@ -2248,6 +2248,59 @@ async def root():
         "crewai_service": CREWAI_SERVICE_URL
     }
 
+@app.get("/api/v1/documentos/{case_id}")
+async def get_documents_for_case(case_id: str):
+    """
+    Endpoint para obtener documentos de un caso específico.
+    Usado por el servicio CrewAI para acceder a los documentos procesados.
+    """
+    try:
+        logger.info(f"📄 Solicitando documentos para case_id: {case_id}")
+        
+        # Obtener documentos desde Supabase
+        def sync_get_documents():
+            response = supabase.table('documents').select('*').eq('case_id', case_id).execute()
+            return response.data
+        
+        documents = await asyncio.to_thread(sync_get_documents)
+        
+        if not documents:
+            logger.warning(f"⚠️ No se encontraron documentos para case_id: {case_id}")
+            return {
+                "case_id": case_id,
+                "documents": [],
+                "count": 0,
+                "message": "No se encontraron documentos para este caso"
+            }
+        
+        # Formatear documentos para CrewAI
+        formatted_documents = []
+        for doc in documents:
+            formatted_doc = {
+                "name": doc.get('name'),
+                "file_url": doc.get('file_url'),
+                "document_tag": doc.get('document_tag'),
+                "uploaded_at": doc.get('uploaded_at'),
+                "type": "application/pdf"  # Asumimos PDF por defecto
+            }
+            formatted_documents.append(formatted_doc)
+        
+        logger.info(f"✅ Encontrados {len(formatted_documents)} documentos para case_id: {case_id}")
+        
+        return {
+            "case_id": case_id,
+            "documents": formatted_documents,
+            "count": len(formatted_documents),
+            "message": "Documentos obtenidos exitosamente"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error al obtener documentos para {case_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error interno al obtener documentos: {str(e)}"
+        )
+
 @app.get("/health")
 async def health_check():
     """Endpoint de verificação de saúde con estado del servicio CrewAI."""
