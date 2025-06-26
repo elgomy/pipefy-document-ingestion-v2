@@ -2316,7 +2316,7 @@ async def get_documents_for_case(case_id: str):
         
         # Obtener documentos desde Supabase
         def sync_get_documents():
-            response = supabase.table('documents').select('*').eq('case_id', case_id).execute()
+            response = supabase_client.table('documents').select('*').eq('case_id', case_id).execute()
             return response.data
         
         documents = await asyncio.to_thread(sync_get_documents)
