@@ -802,8 +802,15 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                     
                     # 🆕 NUEVA LÓGICA: Verificar si hay respuesta JSON estructurada para orquestación
                     structured_response = analysis_result.get("structured_response")
+                    
+                    # FALLBACK: Si structured_response no existe, usar analysis_result directamente si tiene case_id
+                    if not structured_response and isinstance(analysis_result, dict) and analysis_result.get("case_id"):
+                        structured_response = analysis_result
+                        logger.info(f"🔄 Usando analysis_result como structured_response (fallback)")
+                    
                     if structured_response and isinstance(structured_response, dict):
                         logger.info(f"🎯 Resposta JSON estruturada detectada - Executando orquestrador")
+                        logger.info(f"📋 Estrutura detectada: {list(structured_response.keys())}")
                         
                         # Executar orquestrador com a resposta estruturada
                         orchestration_result = await handle_crewai_analysis_result(case_id, structured_response)
@@ -873,8 +880,15 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                             
                             # 🆕 NUEVA LÓGICA: Verificar si hay respuesta JSON estructurada para orquestación (retry)
                             structured_response = analysis_result.get("structured_response")
+                            
+                            # FALLBACK: Si structured_response no existe, usar analysis_result directamente si tiene case_id
+                            if not structured_response and isinstance(analysis_result, dict) and analysis_result.get("case_id"):
+                                structured_response = analysis_result
+                                logger.info(f"🔄 Usando analysis_result como structured_response (fallback retry)")
+                            
                             if structured_response and isinstance(structured_response, dict):
                                 logger.info(f"🎯 Resposta JSON estruturada detectada no retry - Executando orquestrador")
+                                logger.info(f"📋 Estrutura detectada no retry: {list(structured_response.keys())}")
                                 
                                 # Executar orquestrador com a resposta estruturada
                                 orchestration_result = await handle_crewai_analysis_result(case_id, structured_response)
