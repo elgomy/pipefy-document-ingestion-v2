@@ -1172,8 +1172,8 @@ async def get_manager_phone_for_card(card_id: str) -> Optional[str]:
     # TODO: Implementar lógica para buscar o telefone real do gestor
     # Pode ser um campo no card ou uma consulta à base de dados
     
-    # Por enquanto, usar número de teste
-    test_manager_phone = "+5531999034444"  # Número para testes - actualizado
+    # Por enquanto, usar número de teste (formato correto registrado en Twilio)
+    test_manager_phone = "+553199034444"  # Número para testes - formato correcto sin 9 adicional
     
     logger.info(f"📞 Número do gestor para card {card_id}: {test_manager_phone}")
     return test_manager_phone
