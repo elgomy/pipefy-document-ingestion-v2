@@ -2324,6 +2324,7 @@ async def get_documents_for_case(case_id: str):
         if not documents:
             logger.warning(f"⚠️ No se encontraron documentos para case_id: {case_id}")
             return {
+                "success": True,
                 "case_id": case_id,
                 "documents": [],
                 "count": 0,
@@ -2345,6 +2346,7 @@ async def get_documents_for_case(case_id: str):
         logger.info(f"✅ Encontrados {len(formatted_documents)} documentos para case_id: {case_id}")
         
         return {
+            "success": True,
             "case_id": case_id,
             "documents": formatted_documents,
             "count": len(formatted_documents),

@@ -1,0 +1,134 @@
+{
+  "exported_at": "2025-06-25T12:22:09.792866",
+  "metrics": {
+    "timestamp": "2025-06-25T12:22:09.792870",
+    "services": {
+      "pipefy": {
+        "service": "pipefy",
+        "total_requests": 10,
+        "successful_requests": 4,
+        "failed_requests": 6,
+        "timeout_requests": 0,
+        "success_rate": 40.0,
+        "avg_response_time_seconds": 0.16,
+        "consecutive_failures": 2,
+        "circuit_breaker_open": false,
+        "last_success": "2025-06-25T12:22:09.076720",
+        "last_failure": "2025-06-25T12:22:09.415272"
+      },
+      "crewai": {
+        "service": "crewai",
+        "total_requests": 4,
+        "successful_requests": 0,
+        "failed_requests": 4,
+        "timeout_requests": 4,
+        "success_rate": 0.0,
+        "avg_response_time_seconds": 0.17,
+        "consecutive_failures": 4,
+        "circuit_breaker_open": true,
+        "last_success": null,
+        "last_failure": "2025-06-25T12:22:09.250047"
+      },
+      "twilio": {
+        "service": "twilio",
+        "total_requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "timeout_requests": 0,
+        "success_rate": 100.0,
+        "avg_response_time_seconds": 0.15,
+        "consecutive_failures": 0,
+        "circuit_breaker_open": false,
+        "last_success": "2025-06-25T12:22:09.126432",
+        "last_failure": null
+      },
+      "cnpj": {
+        "service": "cnpj",
+        "total_requests": 4,
+        "successful_requests": 4,
+        "failed_requests": 0,
+        "timeout_requests": 0,
+        "success_rate": 100.0,
+        "avg_response_time_seconds": 0.12,
+        "consecutive_failures": 0,
+        "circuit_breaker_open": false,
+        "last_success": "2025-06-25T12:22:09.790085",
+        "last_failure": null
+      },
+      "supabase": {
+        "service": "supabase",
+        "total_requests": 2,
+        "successful_requests": 0,
+        "failed_requests": 2,
+        "timeout_requests": 0,
+        "success_rate": 0.0,
+        "avg_response_time_seconds": 0.15,
+        "consecutive_failures": 2,
+        "circuit_breaker_open": false,
+        "last_success": null,
+        "last_failure": "2025-06-25T12:22:08.973773"
+      }
+    },
+    "summary": {
+      "total_requests": 24,
+      "total_successful": 12,
+      "total_failed": 12,
+      "overall_success_rate": 50.0,
+      "services_with_failures": 3,
+      "services_with_circuit_open": 1,
+      "total_services": 5
+    }
+  },
+  "recent_alerts": [
+    {
+      "timestamp": "2025-06-25T12:22:08.461371",
+      "service": "pipefy",
+      "level": "error",
+      "message": "Falhas consecutivas: 3",
+      "context": {
+        "consecutive_failures": 3,
+        "error": "Pipefy API rate limit exceeded"
+      }
+    },
+    {
+      "timestamp": "2025-06-25T12:22:09.026956",
+      "service": "pipefy",
+      "level": "error",
+      "message": "Falhas consecutivas: 4",
+      "context": {
+        "consecutive_failures": 4,
+        "error": "Pipefy API rate limit exceeded"
+      }
+    },
+    {
+      "timestamp": "2025-06-25T12:22:09.027402",
+      "service": "crewai",
+      "level": "error",
+      "message": "Falhas consecutivas: 3",
+      "context": {
+        "consecutive_failures": 3,
+        "error": "CrewAI service timeout"
+      }
+    },
+    {
+      "timestamp": "2025-06-25T12:22:09.250069",
+      "service": "crewai",
+      "level": "error",
+      "message": "Falhas consecutivas: 4",
+      "context": {
+        "consecutive_failures": 4,
+        "error": "CrewAI service timeout"
+      }
+    },
+    {
+      "timestamp": "2025-06-25T12:22:09.415296",
+      "service": "pipefy",
+      "level": "warning",
+      "message": "Alta taxa de falhas: 60.0%",
+      "context": {
+        "failure_rate": 60.0,
+        "total_requests": 10
+      }
+    }
+  ]
+}
