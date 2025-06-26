@@ -21,6 +21,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import json
 from datetime import datetime
+import re
 
 # Cargar variables de entorno
 load_dotenv()
@@ -29,7 +30,7 @@ load_dotenv()
 from src.config.settings import settings
 
 # Configuración de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Variables de entorno
@@ -60,6 +61,47 @@ PIPEFY_API_URL = "https://api.pipefy.com/graphql"
 
 # Cliente Supabase global
 supabase_client: Optional[Client] = None
+
+def normalize_cnpj(cnpj: str) -> str:
+    """
+    Normaliza CNPJ removendo todos os caracteres não numéricos.
+    Transforma de formato '51.441.685/0001-41' para '51441685000141'
+    
+    Args:
+        cnpj: CNPJ em qualquer formato
+        
+    Returns:
+        str: CNPJ apenas com números (14 dígitos)
+    """
+    if not cnpj:
+        return ""
+    
+    # Remove todos os caracteres não numéricos
+    cnpj_clean = re.sub(r'[^\d]', '', str(cnpj))
+    
+    # Log da transformação para debug
+    if cnpj != cnpj_clean:
+        logger.info(f"🔄 CNPJ normalizado: '{cnpj}' → '{cnpj_clean}'")
+    
+    return cnpj_clean
+
+def validate_cnpj_format(cnpj: str) -> bool:
+    """
+    Valida se CNPJ tem o formato correto (14 dígitos).
+    
+    Args:
+        cnpj: CNPJ para validar
+        
+    Returns:
+        bool: True se válido, False caso contrário
+    """
+    cnpj_clean = normalize_cnpj(cnpj)
+    is_valid = len(cnpj_clean) == 14 and cnpj_clean.isdigit()
+    
+    if not is_valid:
+        logger.warning(f"⚠️ CNPJ inválido: '{cnpj}' (normalizado: '{cnpj_clean}', tamanho: {len(cnpj_clean)})")
+    
+    return is_valid
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1131,7 +1173,7 @@ async def get_manager_phone_for_card(card_id: str) -> Optional[str]:
     # Pode ser um campo no card ou uma consulta à base de dados
     
     # Por enquanto, usar número de teste
-    test_manager_phone = "+5531999999999"  # Substituir por lógica real
+    test_manager_phone = "+5531999034444"  # Número para testes - actualizado
     
     logger.info(f"📞 Número do gestor para card {card_id}: {test_manager_phone}")
     return test_manager_phone
@@ -1298,8 +1340,8 @@ async def extract_cnpj_from_pipefy_card(card_id: str) -> Optional[str]:
                     if 'CNPJ' in raw_cnpj.upper():
                         raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
                     
-                    cnpj_clean = re.sub(r'[^\d]', '', raw_cnpj)
-                    if len(cnpj_clean) == 14:
+                    cnpj_clean = normalize_cnpj(raw_cnpj)
+                    if validate_cnpj_format(cnpj_clean):
                         logger.info(f"✅ CNPJ extraído do card: {cnpj_clean}")
                         return cnpj_clean
             
@@ -1330,14 +1372,15 @@ async def gerar_e_armazenar_cartao_cnpj(case_id: str, cnpj: str) -> bool:
         return False
     
     try:
-        # Limpar CNPJ (remover caracteres especiais)
-        cnpj_clean = ''.join(filter(str.isdigit, cnpj))
+        # Normalizar CNPJ usando função auxiliar
+        cnpj_clean = normalize_cnpj(cnpj)
         
-        if len(cnpj_clean) != 14:
-            logger.error(f"❌ CNPJ inválido: {cnpj}")
+        if not validate_cnpj_format(cnpj):
+            logger.error(f"❌ CNPJ inválido: {cnpj} (normalizado: {cnpj_clean})")
             return False
         
         logger.info(f"🏭 Gerando Cartão CNPJ para {cnpj_clean} no caso {case_id}")
+        logger.info(f"📞 URL da API CNPJá: https://api.cnpja.com/rfb/certificate?taxId={cnpj_clean}&pages=REGISTRATION")
         
         # Chamar API CNPJá
         headers = {
@@ -1503,14 +1546,14 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                 if 'CNPJ' in raw_cnpj.upper():
                     raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
                 
-                cnpj_extraido = re.sub(r'[^\d]', '', raw_cnpj)  # Remove tudo que não é dígito
+                cnpj_extraido = normalize_cnpj(raw_cnpj)  # Remove tudo que não é dígito
                 
                 # Validar que tem 14 dígitos
-                if len(cnpj_extraido) == 14:
+                if validate_cnpj_format(cnpj_extraido):
                     logger.info(f"🎯 CNPJ encontrado automaticamente: {cnpj_extraido} (padrão: {pattern})")
                     break
                 else:
-                    logger.warning(f"⚠️ CNPJ inválido encontrado (tamanho {len(cnpj_extraido)}): {cnpj_extraido}")
+                    logger.warning(f"⚠️ CNPJ inválido encontrado: {cnpj_extraido}")
                     cnpj_extraido = None
         
         # Verificar se há necessidade de Cartão CNPJ
@@ -1628,8 +1671,8 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                                 raw_cnpj = cnpj_matches[0]
                                 if 'CNPJ' in raw_cnpj.upper():
                                     raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
-                                cnpj_extraido_bloqueante = re.sub(r'[^\d]', '', raw_cnpj)
-                                if len(cnpj_extraido_bloqueante) == 14:
+                                cnpj_extraido_bloqueante = normalize_cnpj(raw_cnpj)
+                                if validate_cnpj_format(cnpj_extraido_bloqueante):
                                     break
                                 else:
                                     cnpj_extraido_bloqueante = None
@@ -1707,8 +1750,8 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
                                 raw_cnpj = cnpj_matches[0]
                                 if 'CNPJ' in raw_cnpj.upper():
                                     raw_cnpj = re.sub(r'CNPJ[:\s]*', '', raw_cnpj, flags=re.IGNORECASE)
-                                cnpj_extraido_local = re.sub(r'[^\d]', '', raw_cnpj)
-                                if len(cnpj_extraido_local) == 14:
+                                cnpj_extraido_local = normalize_cnpj(raw_cnpj)
+                                if validate_cnpj_format(cnpj_extraido_local):
                                     break
                                 else:
                                     cnpj_extraido_local = None
