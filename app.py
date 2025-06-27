@@ -836,7 +836,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                 # Procesar resultado completo
                 if result.get("status") == "completed" and "analysis_result" in result:
                     analysis_result = result["analysis_result"]
-                    summary_report = analysis_result.get("summary_report", "")
+                    summary_report = analysis_result.get("informe", "")
                     
                     # MODULARIDAD: Solo el módulo CrewAI guarda en Supabase
                     # Este módulo solo se encarga de la comunicación con Pipefy
@@ -864,7 +864,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                             "supabase_saved_by_crewai": True,
                             "communication": "http_direct_sync_with_orchestration",
                             "risk_score": analysis_result.get("risk_score"),
-                            "summary_report": summary_report,
+                            "informe": summary_report,
                             "architecture": "modular_separation_v2"
                         }
                     else:
@@ -887,7 +887,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                             "pipefy_updated": pipefy_updated,
                             "communication": "http_direct_sync",
                             "risk_score": analysis_result.get("risk_score"),
-                            "summary_report": summary_report,
+                            "informe": summary_report,
                             "architecture": "modular_separation"
                         }
                 else:
@@ -916,7 +916,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                         
                         if result.get("status") == "completed" and "analysis_result" in result:
                             analysis_result = result["analysis_result"]
-                            summary_report = analysis_result.get("summary_report", "")
+                            summary_report = analysis_result.get("informe", "")
                             
                             logger.info(f"💾 Informe guardado por módulo CrewAI en tabla informe_cadastro")
                             
@@ -942,7 +942,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                                     "supabase_saved_by_crewai": True,
                                     "communication": "http_direct_sync_retry_with_orchestration",
                                     "risk_score": analysis_result.get("risk_score"),
-                                    "summary_report": summary_report,
+                                    "informe": summary_report,
                                     "architecture": "modular_separation_v2",
                                     "cold_start_handled": True
                                 }
@@ -961,7 +961,7 @@ async def call_crewai_analysis_service(case_id: str, documents: List[Dict], chec
                                     "pipefy_updated": pipefy_updated,
                                     "communication": "http_direct_sync_retry",
                                     "risk_score": analysis_result.get("risk_score"),
-                                    "summary_report": summary_report,
+                                    "informe": summary_report,
                                     "architecture": "modular_separation",
                                     "cold_start_handled": True
                                 }
