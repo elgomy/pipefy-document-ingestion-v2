@@ -759,30 +759,13 @@ async def register_document_in_db(case_id: str, document_name: str, document_tag
         return False
 
 async def get_checklist_url_from_supabase(config_name: str = "checklist_cadastro_pj") -> str:
-    """Obtém a URL do checklist da tabela checklist_config."""
-    if not supabase_client:
-        logger.warning("AVISO: Cliente Supabase não inicializado para buscar checklist. Usando URL padrão.")
-        return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
-    
-    try:
-        logger.info(f"INFO: Buscando URL do checklist '{config_name}' de checklist_config...")
-        
-        def sync_get_checklist_url():
-            return supabase_client.table("checklist_config").select("checklist_url").eq("config_name", config_name).single().execute()
-        
-        response = await asyncio.to_thread(sync_get_checklist_url)
-
-        if response.data and response.data.get("checklist_url"):
-            checklist_url = response.data["checklist_url"]
-            logger.info(f"INFO: URL do checklist obtida: {checklist_url}")
-            return checklist_url
-        else:
-            logger.warning(f"AVISO: URL do checklist '{config_name}' não encontrada. Usando URL padrão.")
-            return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
-            
-    except Exception as e:
-        logger.warning(f"AVISO: Erro ao buscar URL do checklist '{config_name}': {e}. Usando URL padrão.")
-        return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
+    """
+    FUNCIÓN OBSOLETA: Ya no usa checklist_config (tabla eliminada).
+    El sistema ahora usa FAQ.pdf directamente desde archivos.
+    Mantiene compatibilidad devolviendo URL fija.
+    """
+    logger.info("INFO: Sistema migrado a FAQ.pdf directo. Devolviendo URL fija de checklist para compatibilidad.")
+    return "https://aguoqgqbdbyipztgrmbd.supabase.co/storage/v1/object/public/checklist/checklist.pdf"
 
 # 🔗 COMUNICACIÓN HTTP DIRECTA CON CREWAI
 async def call_crewai_analysis_service(case_id: str, documents: List[Dict], checklist_url: str, pipe_id: Optional[str] = None) -> Dict[str, Any]:
