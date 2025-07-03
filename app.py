@@ -23,6 +23,10 @@ import json
 from datetime import datetime
 import re
 
+# Configuración de logging (MOVER ARRIBA para evitar NameError)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # 🔥 NUEVO: LlamaParse para procesamiento de documentos
 try:
     from llama_parse import LlamaParse
@@ -37,10 +41,6 @@ load_dotenv()
 
 # Importar settings de configuración
 from src.config.settings import settings
-
-# Configuración de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Variables de entorno
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -1936,7 +1936,7 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
         if status_geral == "Pendencia_Bloqueante":
             logger.info(f"🚨 Processando PENDÊNCIA BLOQUEANTE para card {card_id}")
             
-            # Primeiro verificar se há ações de CNPJ a executar ANTES de mover o card
+            # Primeiro verificar se há ações de CNPJ a ejecutar ANTES de mover o card
             for acao in acoes_requeridas:
                 item = acao.get("item", "")
                 acao_tipo = acao.get("acao", "")
@@ -2122,9 +2122,9 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
         # Determinar sucesso geral
         if result["errors"]:
             result["success"] = False
-            logger.warning(f"⚠️ Processamento concluído com erros para card {card_id}: {result['errors']}")
+            logger.warning(f"⚠️ Processamento concluído con errores para card {card_id}: {result['errors']}")
         else:
-            logger.info(f"✅ Processamento concluído com sucesso para card {card_id}")
+            logger.info(f"✅ Processamento concluído con sucesso para card {card_id}")
         
         return result
         
@@ -2142,7 +2142,7 @@ async def handle_crewai_analysis_result(card_id: str, crew_response: Dict[str, A
 @app.post("/webhook/pipefy")
 async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTasks, x_pipefy_signature: Optional[str] = Header(None)):
     """
-    Recebe webhooks do Pipefy, processa anexos, armazena no Supabase e chama CrewAI diretamente.
+    Recebe webhooks do Pipefy, processa anexos, armazena no Supabase y chama CrewAI diretamente.
     VERSIÓN HTTP DIRECTA: Mantiene modularidad pero usa comunicación HTTP directa.
     """
     try:
@@ -2278,7 +2278,7 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
                 else:
                     logger.warning(f"⚠️ Falha ao baixar o anexo '{att.name}' do Pipefy.")
         
-        logger.info(f"✅ {len(processed_documents)} documentos processados com sucesso.")
+        logger.info(f"✅ {len(processed_documents)} documentos processados con sucesso.")
 
         # Obtener URL del checklist
         logger.info("🔍 Buscando URL do checklist...")
