@@ -194,7 +194,7 @@ class SupabaseWebhookPayload(BaseModel):
     """Modelo para el payload del webhook de Supabase"""
     type: str  # INSERT, UPDATE, DELETE
     table: str
-    schema: str
+    db_schema: str  # Renombrado para evitar warning de Pydantic
     record: Optional[Dict[str, Any]] = None
     old_record: Optional[Dict[str, Any]] = None
 
