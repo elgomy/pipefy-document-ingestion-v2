@@ -27,14 +27,13 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔥 NUEVO: LlamaParse para procesamiento de documentos
+# LOGS DE DEPURACIÓN DE ENTORNO Y LIBRERÍA
+logger.info(f"DEBUG: LLAMA_CLOUD_API_KEY visible en entorno: {os.getenv('LLAMA_CLOUD_API_KEY')}")
 try:
-    from llama_parse import LlamaParse
-    LLAMAPARSE_AVAILABLE = True
-    logger.info("✅ LlamaParse importado exitosamente")
-except ImportError:
-    LLAMAPARSE_AVAILABLE = False
-    logger.warning("⚠️ LlamaParse no disponible - función de parseo deshabilitada")
+    from llama_cloud_services import LlamaParse
+    logger.info("DEBUG: LlamaParse importado correctamente")
+except ImportError as e:
+    logger.error(f"DEBUG: Error importando LlamaParse: {e}")
 
 # Cargar variables de entorno
 load_dotenv()
