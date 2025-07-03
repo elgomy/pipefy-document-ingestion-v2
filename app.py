@@ -23,6 +23,15 @@ import json
 from datetime import datetime
 import re
 
+# 🔥 NUEVO: LlamaParse para procesamiento de documentos
+try:
+    from llama_parse import LlamaParse
+    LLAMAPARSE_AVAILABLE = True
+    logger.info("✅ LlamaParse importado exitosamente")
+except ImportError:
+    LLAMAPARSE_AVAILABLE = False
+    logger.warning("⚠️ LlamaParse no disponible - función de parseo deshabilitada")
+
 # Cargar variables de entorno
 load_dotenv()
 
@@ -48,6 +57,9 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "+17245586619")
 CNPJA_API_KEY = os.getenv("CNPJA_API_KEY")
+
+# 🔥 NUEVA VARIABLE PARA LLAMAPARSE
+LLAMAPARSE_API_KEY = os.getenv("LLAMAPARSE_API_KEY", "llx-9RGkWMn16EGwqdzd2bDWIW4jp8NgiWLVMVSays2z41GLGjB6")
 
 # 🎯 IDs DE FASES DE PIPEFY SEGÚN PRD (usando settings)
 PHASE_ID_TRIAGEM = "338000020"  # Triagem Documentos AI (fijo para webhook)
@@ -723,8 +735,217 @@ async def determine_document_tag(filename: str, card_fields: Optional[List[Dict]
     
     return "outro_documento"
 
-async def register_document_in_db(case_id: str, document_name: str, document_tag: str, file_url: str, pipe_id: Optional[str] = None):
-    """Registra um documento na tabela 'documents' do Supabase."""
+# 🔥 FUNCIÓN MEJORADA: Parseo avanzado con LlamaParse
+async def parse_document_with_llamaparse(file_url: str, filename: str) -> Dict[str, Any]:
+    """
+    Parsea un documento usando LlamaParse con implementación mejorada.
+    
+    Args:
+        file_url: URL del archivo en Supabase Storage o ruta local
+        filename: Nombre original del archivo
+        
+    Returns:
+        Dict con parsed_content, parsing_status, confidence_score, error_message, metadata
+    """
+    if not LLAMAPARSE_AVAILABLE:
+        return {
+            "parsed_content": None,
+            "parsing_status": "disabled",
+            "parsing_error": "LlamaParse no disponible",
+            "confidence_score": 0.0,
+            "metadata": {}
+        }
+    
+    if not LLAMAPARSE_API_KEY:
+        return {
+            "parsed_content": None,
+            "parsing_status": "error",
+            "parsing_error": "API key de LlamaParse no configurada",
+            "confidence_score": 0.0,
+            "metadata": {}
+        }
+    
+    temp_file_path = None
+    
+    try:
+        logger.info(f"🔥 Iniciando parseo mejorado con LlamaParse para: {filename}")
+        
+        # Determinar si es URL o archivo local
+        is_url = file_url.startswith(('http://', 'https://'))
+        
+        if is_url:
+            # Descargar archivo de URL a temporal
+            logger.info(f"📥 Descargando desde URL: {file_url}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(file_url)
+                response.raise_for_status()
+                
+                # Extraer extensión limpiando parámetros
+                url_without_params = file_url.split('?')[0]
+                possible_extension = ""
+                if '.' in url_without_params.split('/')[-1]:
+                    possible_extension = "." + url_without_params.split('/')[-1].split('.')[-1]
+                elif '.' in filename:
+                    possible_extension = "." + filename.split('.')[-1]
+                
+                # Crear archivo temporal
+                temp_file = tempfile.NamedTemporaryFile(
+                    delete=False, 
+                    suffix=possible_extension, 
+                    mode='wb'
+                )
+                temp_file.write(response.content)
+                temp_file.close()
+                temp_file_path = temp_file.name
+                logger.info(f"✅ Archivo descargado a: {temp_file_path}")
+        else:
+            # Usar archivo local directamente
+            temp_file_path = file_url
+        
+        # Determinar preset basado en tipo de archivo
+        file_extension = filename.lower().split('.')[-1] if '.' in filename else ''
+        preset = "detailed" if file_extension in ['pdf', 'docx'] else "simple"
+        
+        # Instrucciones específicas para documentos empresariales
+        parsing_instructions = (
+            "Extraer toda la información relevante del documento incluyendo: "
+            "datos de empresa, información legal, contratos, tablas de datos, "
+            "fechas importantes, y cualquier información que pueda ser útil "
+            "para análisis de cumplimiento y triagem. Preservar la estructura "
+            "y formateo del documento original."
+        )
+        
+        # Configurar LlamaParse con configuración mejorada
+        parser = LlamaParse(
+            api_key=LLAMAPARSE_API_KEY,
+            result_type="markdown",
+            language="pt",  # Portugués para documentos brasileños
+            parsing_instruction=parsing_instructions,
+            verbose=True
+        )
+        
+        # Ejecutar parseo en thread separado
+        def sync_parse():
+            try:
+                documents = parser.load_data(temp_file_path)
+                return documents
+            except Exception as e:
+                logger.error(f"❌ Error en parseo sincrónico: {e}")
+                raise e
+        
+        # Parsear documento
+        logger.info(f"⏳ Parseando con preset '{preset}': {filename}")
+        parsed_docs = await asyncio.to_thread(sync_parse)
+        
+        if not parsed_docs or len(parsed_docs) == 0:
+            return {
+                "parsed_content": None,
+                "parsing_status": "empty",
+                "parsing_error": "LlamaParse no retornó documentos",
+                "confidence_score": 0.0,
+                "metadata": {"preset_used": preset, "document_count": 0}
+            }
+        
+        # Combinar contenido de todas las páginas
+        full_content = "\n\n---\n\n".join([doc.text for doc in parsed_docs if hasattr(doc, 'text') and doc.text])
+        
+        if not full_content or len(full_content.strip()) < 10:
+            return {
+                "parsed_content": None,
+                "parsing_status": "empty",
+                "parsing_error": "Contenido extraído está vacío o muy corto",
+                "confidence_score": 0.0,
+                "metadata": {"preset_used": preset, "document_count": len(parsed_docs)}
+            }
+        
+        # Calcular puntuación de confianza mejorada
+        content_length = len(full_content.strip())
+        words_count = len(full_content.split())
+        
+        # Factores de confianza
+        content_length_score = min(0.4, content_length / 2500)  # Máximo 0.4
+        
+        # Bonus por estructura (headers, listas, tablas)
+        structure_indicators = ['#', '*', '-', '|', '\n\n']
+        structure_score = min(0.3, sum(full_content.count(indicator) for indicator in structure_indicators) / 50)
+        
+        # Bonus por preset detallado
+        preset_bonus = 0.1 if preset == "detailed" else 0.05
+        
+        # Penalty por contenido muy corto
+        length_penalty = 0.0 if content_length > 100 else -0.2
+        
+        # Bonus por tipo de archivo
+        format_bonus = {
+            'pdf': 0.15,
+            'docx': 0.10,
+            'doc': 0.05,
+            'txt': 0.05
+        }.get(file_extension, 0.0)
+        
+        confidence_score = content_length_score + structure_score + preset_bonus + length_penalty + format_bonus
+        confidence_score = round(min(1.0, max(0.0, confidence_score)), 3)
+        
+        # Metadatos enriquecidos
+        metadata = {
+            "preset_used": preset,
+            "language": "pt",
+            "document_count": len(parsed_docs),
+            "content_length": content_length,
+            "words_count": words_count,
+            "has_structure": structure_score > 0.1,
+            "file_extension": file_extension,
+            "is_url_source": is_url
+        }
+        
+        logger.info(
+            f"✅ Parseo exitoso: {filename} - "
+            f"{content_length} chars, {words_count} palabras, "
+            f"confianza: {confidence_score:.3f}, preset: {preset}"
+        )
+        
+        return {
+            "parsed_content": full_content.strip(),
+            "parsing_status": "completed",
+            "parsing_error": None,
+            "confidence_score": confidence_score,
+            "metadata": metadata
+        }
+        
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Error HTTP {e.response.status_code} al descargar {file_url}"
+        logger.error(f"❌ {error_msg}: {e.response.text}")
+        return {
+            "parsed_content": None,
+            "parsing_status": "error",
+            "parsing_error": error_msg,
+            "confidence_score": 0.0,
+            "metadata": {}
+        }
+    except Exception as e:
+        error_msg = f"Error al parsear documento {filename}: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        return {
+            "parsed_content": None,
+            "parsing_status": "error",
+            "parsing_error": error_msg,
+            "confidence_score": 0.0,
+            "metadata": {}
+        }
+    finally:
+        # Limpiar archivo temporal si se descargó
+        if temp_file_path and is_url and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                logger.info(f"🗑️ Archivo temporal eliminado: {temp_file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo eliminar archivo temporal {temp_file_path}: {str(e)}")
+
+async def register_document_in_db(case_id: str, document_name: str, document_tag: str, file_url: str, pipe_id: Optional[str] = None, parsed_data: Optional[Dict] = None):
+    """
+    Registra um documento na tabela 'documents' do Supabase.
+    MEJORADO: Ahora incluye datos parseados de LlamaParse.
+    """
     if not supabase_client:
         logger.error("ERRO: Cliente Supabase não inicializado.")
         return False
@@ -742,6 +963,43 @@ async def register_document_in_db(case_id: str, document_name: str, document_tag
             data_to_insert["pipe_id"] = pipe_id
             logger.info(f"INFO: Registrando documento con pipe_id: {pipe_id}")
         
+        # 🔥 MEJORADO: Incluir datos parseados con metadatos enriquecidos
+        if parsed_data:
+            data_to_insert.update({
+                "parsed_content": parsed_data.get("parsed_content"),
+                "parsing_status": parsed_data.get("parsing_status", "pending"),
+                "parsing_error": parsed_data.get("parsing_error"),
+                "confidence_score": parsed_data.get("confidence_score", 0.0),
+                "parsed_at": datetime.now().isoformat()
+            })
+            
+            # Incluir metadatos si están disponibles
+            metadata = parsed_data.get("metadata", {})
+            if metadata:
+                # Los metadatos se pueden guardar como JSON en un campo metadata si existe
+                # o loggear para monitoreo
+                preset = metadata.get("preset_used", "unknown")
+                words_count = metadata.get("words_count", 0)
+                has_structure = metadata.get("has_structure", False)
+                
+                logger.info(f"📊 Metadatos del parseo - Preset: {preset}, Palabras: {words_count}, Estructura: {has_structure}")
+            
+            status = parsed_data.get("parsing_status", "unknown")
+            if status == "completed":
+                content_length = len(parsed_data.get("parsed_content", ""))
+                confidence = parsed_data.get("confidence_score", 0.0)
+                logger.info(f"📄 Registrando documento parseado: {document_name} ({content_length} caracteres, confianza: {confidence:.3f})")
+            else:
+                error_msg = parsed_data.get("parsing_error", "Error desconocido")
+                logger.warning(f"⚠️ Registrando documento con parseo fallido: {document_name} (status: {status}, error: {error_msg})")
+        else:
+            # Sin datos parseados - establecer valores por defecto
+            data_to_insert.update({
+                "parsing_status": "pending",
+                "confidence_score": 0.0
+            })
+            logger.info(f"📄 Registrando documento sin parsear: {document_name}")
+        
         response = await asyncio.to_thread(
             supabase_client.table("documents").upsert(data_to_insert, on_conflict="case_id, name").execute
         )
@@ -757,6 +1015,72 @@ async def register_document_in_db(case_id: str, document_name: str, document_tag
     except Exception as e:
         logger.error(f"ERRO ao registrar documento '{document_name}' no Supabase DB: {e}")
         return False
+
+# 🔥 NUEVA FUNCIÓN: Subida y parseo integrados
+async def upload_and_parse_document(local_file_path: str, case_id: str, original_filename: str, pipe_id: Optional[str] = None) -> Optional[str]:
+    """
+    Sube un documento a Supabase Storage Y lo parsea con LlamaParse automáticamente.
+    FLUJO INTEGRADO MEJORADO: Subida → Parseo desde URL → Registro en DB con contenido parseado.
+    """
+    try:
+        logger.info(f"🚀 Iniciando flujo integrado mejorado para: {original_filename}")
+        
+        # 1. Subir a Supabase Storage (función existente)
+        logger.info(f"📤 Subiendo a Storage: {original_filename}")
+        public_url = await upload_to_supabase_storage_async(local_file_path, case_id, original_filename)
+        
+        if not public_url:
+            logger.error(f"❌ Error en subida de {original_filename}")
+            return None
+        
+        logger.info(f"✅ Archivo subido exitosamente: {public_url}")
+        
+        # 2. Parsear usando la URL del archivo (implementación mejorada)
+        logger.info(f"🔥 Parseando documento desde URL: {original_filename}")
+        parsed_data = await parse_document_with_llamaparse(public_url, original_filename)
+        
+        # 3. Determinar tag del documento
+        document_tag = await determine_document_tag(original_filename)
+        
+        # 4. Registrar en DB con datos parseados
+        logger.info(f"💾 Registrando en DB con contenido parseado: {original_filename}")
+        success = await register_document_in_db(
+            case_id=case_id,
+            document_name=original_filename,
+            document_tag=document_tag,
+            file_url=public_url,
+            pipe_id=pipe_id,
+            parsed_data=parsed_data
+        )
+        
+        if success:
+            # Estadísticas finales enriquecidas
+            status = parsed_data.get("parsing_status", "unknown")
+            metadata = parsed_data.get("metadata", {})
+            
+            if status == "completed":
+                content_length = len(parsed_data.get("parsed_content", ""))
+                confidence = parsed_data.get("confidence_score", 0.0)
+                preset = metadata.get("preset_used", "unknown")
+                words_count = metadata.get("words_count", 0)
+                
+                logger.info(
+                    f"✅ Flujo completo exitoso: {original_filename} - "
+                    f"{content_length} chars, {words_count} palabras, "
+                    f"confianza: {confidence:.3f}, preset: {preset}"
+                )
+            else:
+                error_msg = parsed_data.get("parsing_error", "Error desconocido")
+                logger.warning(f"⚠️ Flujo completo con parseo fallido: {original_filename} (status: {status}, error: {error_msg})")
+            
+            return public_url
+        else:
+            logger.error(f"❌ Error al registrar documento parseado: {original_filename}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Error en flujo integrado para {original_filename}: {e}")
+        return None
 
 async def get_checklist_url_from_supabase(config_name: str = "checklist_cadastro_pj") -> str:
     """
@@ -1938,18 +2262,19 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
                 
                 temp_file = await download_file_to_temp(att.path, att.name)
                 if temp_file:
-                    storage_url = await upload_to_supabase_storage_async(temp_file, card_id_str, att.name)
+                    # 🔥 NUEVO: Subida + Parseo integrados automáticamente
+                    storage_url = await upload_and_parse_document(temp_file, card_id_str, att.name, pipe_id)
                     if storage_url:
+                        # Documento ya está parseado y registrado automáticamente
                         document_tag = await determine_document_tag(att.name)
-                        success_db = await register_document_in_db(card_id_str, att.name, document_tag, storage_url, pipe_id)
-                        if success_db:
-                            processed_documents.append({
-                                "name": att.name,
-                                "file_url": storage_url,
-                                "document_tag": document_tag
-                            })
-                        else:
-                            logger.warning(f"⚠️ Falha ao fazer upload do anexo '{att.name}' para Supabase Storage.")
+                        processed_documents.append({
+                            "name": att.name,
+                            "file_url": storage_url,
+                            "document_tag": document_tag
+                        })
+                        logger.info(f"✅ Documento procesado y parseado: {att.name}")
+                    else:
+                        logger.warning(f"⚠️ Falha ao processar anexo '{att.name}' (upload/parse failed).")
                 else:
                     logger.warning(f"⚠️ Falha ao baixar o anexo '{att.name}' do Pipefy.")
         
@@ -2289,17 +2614,27 @@ async def root():
     }
 
 @app.get("/api/v1/documentos/{case_id}")
-async def get_documents_for_case(case_id: str):
+async def get_documents_for_case(case_id: str, include_content: bool = False):
     """
     Endpoint para obtener documentos de un caso específico.
     Usado por el servicio CrewAI para acceder a los documentos procesados.
+    
+    NUEVAS FUNCIONALIDADES:
+    - include_content=true: Incluye contenido parseado por LlamaParse
+    - Aprovecha estructura existente de tabla documents
     """
     try:
-        logger.info(f"📄 Solicitando documentos para case_id: {case_id}")
+        logger.info(f"📄 Solicitando documentos para case_id: {case_id} (content: {include_content})")
         
-        # Obtener documentos desde Supabase
+        # Obtener documentos desde Supabase - AHORA CON CAMPOS PARSEADOS
         def sync_get_documents():
-            response = supabase_client.table('documents').select('*').eq('case_id', case_id).execute()
+            # Seleccionar campos adicionales si se solicita contenido
+            if include_content:
+                fields = '*'  # Incluir todos los campos (incluyendo parsed_content, parsing_status, etc.)
+            else:
+                fields = 'id,name,case_id,document_tag,file_url,status,processed_by_crew,document_type,created_at'
+            
+            response = supabase_client.table('documents').select(fields).eq('case_id', case_id).execute()
             return response.data
         
         documents = await asyncio.to_thread(sync_get_documents)
@@ -2314,25 +2649,54 @@ async def get_documents_for_case(case_id: str):
                 "message": "No se encontraron documentos para este caso"
             }
         
-        # Formatear documentos para CrewAI
+        # Formatear documentos para CrewAI - MEJORADO CON CONTENIDO PARSEADO
         formatted_documents = []
         for doc in documents:
             formatted_doc = {
+                "id": doc.get('id'),
                 "name": doc.get('name'),
                 "file_url": doc.get('file_url'),
                 "document_tag": doc.get('document_tag'),
-                "uploaded_at": doc.get('uploaded_at'),
-                "type": "application/pdf"  # Asumimos PDF por defecto
+                "uploaded_at": doc.get('created_at'),
+                "type": "application/pdf",  # Asumimos PDF por defecto
+                "status": doc.get('status'),
+                "processed_by_crew": doc.get('processed_by_crew')
             }
+            
+            # 🆕 INCLUIR CONTENIDO PARSEADO SI SE SOLICITA
+            if include_content:
+                formatted_doc.update({
+                    "parsed_content": doc.get('parsed_content'),
+                    "parsing_status": doc.get('parsing_status'),
+                    "parsing_error": doc.get('parsing_error'),
+                    "confidence_score": doc.get('confidence_score'),
+                    "parsed_at": doc.get('parsed_at'),
+                    "has_parsed_content": bool(doc.get('parsed_content'))
+                })
+                
+                # Log para depuración
+                if doc.get('parsed_content'):
+                    content_length = len(doc.get('parsed_content', ''))
+                    logger.info(f"📊 Documento '{doc.get('name')}' tiene {content_length} caracteres parseados")
+                else:
+                    logger.warning(f"⚠️ Documento '{doc.get('name')}' no tiene contenido parseado")
+            
             formatted_documents.append(formatted_doc)
         
-        logger.info(f"✅ Encontrados {len(formatted_documents)} documentos para case_id: {case_id}")
+        # Estadísticas de contenido parseado
+        if include_content:
+            parsed_count = sum(1 for doc in formatted_documents if doc.get('has_parsed_content'))
+            logger.info(f"✅ Encontrados {len(formatted_documents)} documentos para case_id: {case_id} ({parsed_count} con contenido parseado)")
+        else:
+            logger.info(f"✅ Encontrados {len(formatted_documents)} documentos para case_id: {case_id}")
         
         return {
             "success": True,
             "case_id": case_id,
             "documents": formatted_documents,
             "count": len(formatted_documents),
+            "parsed_count": sum(1 for doc in formatted_documents if doc.get('has_parsed_content', False)) if include_content else None,
+            "include_content": include_content,
             "message": "Documentos obtenidos exitosamente"
         }
         
