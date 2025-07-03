@@ -21,7 +21,6 @@ supabase==2.0.2
 psycopg2-binary==2.9.9
 
 # AI and document processing
-llama-parse==0.4.9
 
 # Communication services
 twilio==8.10.0
@@ -43,3 +42,4 @@ pytest-mock==3.12.0
 # Code quality tools
 isort==5.12.0
 flake8==6.1.0
+llama-cloud-services
