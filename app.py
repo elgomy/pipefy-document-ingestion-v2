@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 import json
 from datetime import datetime
 import re
+from llama_cloud_services import LlamaParse
 
 # Configuración de logging (MOVER ARRIBA para evitar NameError)
 logging.basicConfig(level=logging.INFO)
@@ -735,12 +736,55 @@ async def determine_document_tag(filename: str, card_fields: Optional[List[Dict]
     return "outro_documento"
 
 # 🔥 FUNCIÓN MEJORADA: Parseo avanzado con LlamaParse
-async def parse_document_with_llamaparse(file_url: str, filename: str) -> Dict[str, Any]:
+async def parse_document_with_llamaparse(file_url: str, filename: str) -> dict:
     """
-    Parsea un documento usando LlamaParse con implementación mejorada.
+    Parsea un documento usando LlamaParse con implementación robusta y validada.
     """
-    # Eliminar control con LLAMAPARSE_AVAILABLE, usar solo try/except y logs
-    # ... resto del código ...
+    LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
+    if not LLAMA_CLOUD_API_KEY:
+        logging.error("LLAMA_CLOUD_API_KEY no está configurada. El parseo estará deshabilitado.")
+        return {
+            "parsed_content": None,
+            "parsing_status": "disabled",
+            "parsing_error": "LLAMA_CLOUD_API_KEY no configurada",
+            "confidence_score": 0.0
+        }
+    try:
+        # Limpiar extensión del archivo
+        url_without_params = file_url.split('?')[0]
+        extension = "." + url_without_params.split('.')[-1] if '.' in url_without_params else ".pdf"
+        # Descargar archivo temporalmente
+        async with httpx.AsyncClient() as client:
+            response = await client.get(file_url)
+            response.raise_for_status()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as tmp_file:
+                tmp_file.write(response.content)
+                tmp_file_path = tmp_file.name
+        parser = LlamaParse(
+            api_key=LLAMA_CLOUD_API_KEY,
+            num_workers=1,
+            verbose=True,
+            language="es"
+        )
+        # Parsear
+        result = await parser.aparse(tmp_file_path)
+        markdown_documents = result.get_markdown_documents(split_by_page=True)
+        parsed_content = "\n\n---\n\n".join([doc.text for doc in markdown_documents if hasattr(doc, 'text') and doc.text])
+        os.remove(tmp_file_path)
+        return {
+            "parsed_content": parsed_content,
+            "parsing_status": "completed" if parsed_content else "empty",
+            "parsing_error": None if parsed_content else "No se extrajo contenido textual",
+            "confidence_score": 1.0 if parsed_content else 0.0
+        }
+    except Exception as e:
+        logging.error(f"Error en parseo con LlamaParse: {e}")
+        return {
+            "parsed_content": None,
+            "parsing_status": "error",
+            "parsing_error": str(e),
+            "confidence_score": 0.0
+        }
 
 async def register_document_in_db(case_id: str, document_name: str, document_tag: str, file_url: str, pipe_id: Optional[str] = None, parsed_data: Optional[Dict] = None):
     """
