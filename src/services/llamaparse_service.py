@@ -31,7 +31,7 @@ async def parse_document_with_llamaparse(request: DocumentParsingRequest) -> Dic
     try:
         parser = LlamaParse(
             api_key=LLAMA_CLOUD_API_KEY,
-            parsing_mode=request.parsing_preset,
+            parse_mode=request.parsing_preset,
             result_type="markdown" if request.result_as_markdown else "text",
             language=request.language
         )
