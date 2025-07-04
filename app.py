@@ -625,7 +625,6 @@ async def get_pipefy_card_attachments(card_id: str) -> List[PipefyAttachment]:
                 field_value = field.get("value", "")
                 if field_value and isinstance(field_value, str):
                     try:
-                        import json
                         urls = json.loads(field_value)
                         if isinstance(urls, list):
                             for url in urls:
@@ -2153,7 +2152,6 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
         logger.info(f"✅ {len(processed_documents)} documentos con contenido parseado serán enviados a CrewAI para análisis.")
 
         # 🔍 LOG DETALLADO DEL PAYLOAD ENVIADO A CREWAI
-        import json
         logger.info("📦 Payload enviado a CrewAI (processed_documents):\n" + json.dumps(processed_documents, indent=2, ensure_ascii=False))
 
         # Obtener URL del checklist
