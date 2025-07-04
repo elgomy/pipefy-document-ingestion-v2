@@ -13,10 +13,11 @@ import httpx
 import logging
 import hmac
 import hashlib
+import json  # <--- AÑADIDO AQUÍ PARA DISPONIBILIDAD GLOBAL
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, Union
 from fastapi import FastAPI, HTTPException, Request, Header, BackgroundTasks
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator, model_validator, Field
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import json
