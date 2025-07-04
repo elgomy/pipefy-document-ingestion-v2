@@ -2125,6 +2125,37 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
         
         logger.info(f"✅ {len(processed_documents)} documentos processados con sucesso.")
 
+        # 🔥 NUEVO: Consultar documentos parseados desde Supabase para armar el payload completo
+        logger.info(f"🔍 Consultando documentos parseados en Supabase para case_id: {card_id_str}")
+        def sync_get_documents():
+            fields = '*'  # Incluir todos los campos
+            response = supabase_client.table('documents').select(fields).eq('case_id', card_id_str).execute()
+            return response.data
+        documents_db = await asyncio.to_thread(sync_get_documents)
+        processed_documents = []
+        for doc in documents_db:
+            if doc.get('parsed_content'):
+                processed_documents.append({
+                    "name": doc.get('name'),
+                    "file_url": doc.get('file_url'),
+                    "document_tag": doc.get('document_tag'),
+                    "parsed_content": doc.get('parsed_content'),
+                    "parsing_status": doc.get('parsing_status'),
+                    "parsing_error": doc.get('parsing_error'),
+                    "confidence_score": doc.get('confidence_score'),
+                    "parsed_at": doc.get('parsed_at'),
+                    "status": doc.get('status'),
+                    "uploaded_at": doc.get('created_at'),
+                    "processed_by_crew": doc.get('processed_by_crew')
+                })
+            else:
+                logger.warning(f"⚠️ Documento '{doc.get('name')}' no tiene contenido parseado y será omitido del análisis.")
+        logger.info(f"✅ {len(processed_documents)} documentos con contenido parseado serán enviados a CrewAI para análisis.")
+
+        # 🔍 LOG DETALLADO DEL PAYLOAD ENVIADO A CREWAI
+        import json
+        logger.info("📦 Payload enviado a CrewAI (processed_documents):\n" + json.dumps(processed_documents, indent=2, ensure_ascii=False))
+
         # Obtener URL del checklist
         logger.info("🔍 Buscando URL do checklist...")
         checklist_url = await get_checklist_url_from_supabase()
@@ -2149,7 +2180,7 @@ async def handle_pipefy_webhook(request: Request, background_tasks: BackgroundTa
 
         return {
             "status": "success",
-            "message": f"Webhook para card {card_id_str} processado. {len(processed_documents)} documentos processados.",
+            "message": f"Webhook para card {card_id_str} processado. {len(processed_documents)} documentos parseados enviados a CrewAI.",
             "service": "document_ingestion_service",
             "card_id": card_id_str,
             "pipe_id": pipe_id,
